@@ -1,0 +1,13 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+- insert:
+    - id: dsh-resume-on-restart
+      name: dsh-resume-on-restart
+      config:
+        enabled: true
+        stateDir: .resume-on-restart
+        target: primary
+        wakeup: true
+        notice: ''
+        shutdownGraceMs: 600000
+        ignoredSessionPrefixes:
+          - head-
