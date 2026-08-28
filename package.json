@@ -25,6 +25,13 @@
   "scripts": {
     "test": "node --test lib/detect.test.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nickkkkkk123123/dsh-resume-on-restart.git"
+  },
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
