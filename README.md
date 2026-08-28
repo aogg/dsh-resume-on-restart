@@ -49,6 +49,15 @@ dsh plugin --profile desktop add <本目录路径>
 | `shutdownGraceMs` | `600000` | 关闭前"活跃即视为任务相关"的宽限窗口 |
 | `ignoredSessionPrefixes` | `['head-']` | 不追踪的会话 id 前缀（如多代理团队的根会话） |
 
+## 开发 / 测试
+
+```bash
+# 运行单元测试（重启检测、消息构建）
+npm test
+```
+
+测试覆盖 `lib/detect.js` 中的纯函数（重启判定、信息性消息构建），不依赖 DSH 运行时。
+
 ## License
 
 MIT
