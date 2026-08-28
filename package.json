@@ -22,6 +22,9 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "scripts": {
+    "test": "node --test lib/detect.test.js"
+  },
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
