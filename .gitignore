@@ -1,0 +1,12 @@
+# dependencies
+node_modules/
+
+# runtime state (marker / wake logs) written under DSH_HOME
+.resume-on-restart/
+
+# logs
+*.log
+
+# build output
+dist/
+build/
