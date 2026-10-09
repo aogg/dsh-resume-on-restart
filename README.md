@@ -23,8 +23,8 @@ dsh plugin --profile desktop add <本目录路径>
 
 每次 DSH 启动时：
 
-1. 读取 marker 文件（`~/.dsh/.resume-on-restart/marker.json`），记录上次的 `pid` / `lastBootAt`
-2. 判断是否重启：当前进程 `pid` ≠ marker 的 `pid` → 判定发生重启
+1. 读取 marker 文件（`~/.dsh/.resume-on-restart/marker.json`），记录上次的 `pid` / `lastBootAt` / `startAt`
+2. 判断是否重启：当前进程 `pid` ≠ marker 的 `pid` → 判定发生重启；`pid` 相同（如容器内恒为 PID 1）则对比进程启动时间 `startAt`，偏差超过 2 秒容差 → 判定发生重启
 3. 写入新的 marker（更新为当前 pid / 时间）
 4. 若判定为重启，轮询等待主 agent 出现（最长 20 秒），投递信息性消息：
    ```
@@ -36,6 +36,15 @@ dsh plugin --profile desktop add <本目录路径>
    ```
 
 运行期间通过 `agent/session-start` 和 `agent/pre-step` 事件持续记录最近活跃会话，下次重启时消息会包含它。
+
+## Docker / PID 1 容器支持
+
+在 Docker 容器里 DSH 服务永远以 PID 1 运行，`pid` 无法区分两次运行（旧版因此检测不到容器内重启）。0.2.0 起的检测方式：
+
+- marker 中额外记录当前进程的启动时刻 `startAt`（由 `computeProcessStartAtMs` = `Date.now() - process.uptime() * 1000` 算出）
+- `pid` 不同 → 直接判定重启（行为不变）
+- `pid` 相同（容器场景）→ 对比本次进程启动时间与 marker 里的 `startAt`，无论时钟前移还是后移，偏差超过 2 秒容差（`START_AT_TOLERANCE_MS = 2000`）都判定重启
+- 旧版 marker（没有 `startAt` 字段）自动兼容：回退用 `lastBootAt` 作为上次启动时间参与对比，不丢弃 marker
 
 ## 配置（cordis.patch.yml）
 

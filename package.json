@@ -1,6 +1,6 @@
 {
   "name": "dsh-resume-on-restart",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 插件：检测 DSH 服务重启后自动唤醒主 agent，投递提示消息让中断的工作自动恢复。仅依赖 cordis ctx 服务，兼容 DSH Desktop 打包环境。",
   "keywords": [
     "dsh",
