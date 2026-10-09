@@ -11,3 +11,8 @@
         shutdownGraceMs: 600000
         ignoredSessionPrefixes:
           - head-
+        trackMax: 5
+        persistThrottleMs: 5000
+        restoreSessions: true
+        restoreMax: 1
+        restoreTimeoutMs: 30000

@@ -1,15 +1,21 @@
 # dsh-resume-on-restart
 
-DSH 插件：检测 DSH 服务重启后，自动向主 agent 投递一条**信息性消息**（含中断时长、上次活跃会话等状态摘要），让 agent **自主决定**是否继续之前的工作或启动新任务。
+DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话**（把"重启前正在干活的会话"
+恢复成 live agent 并投递通知，让它自己继续），失败时降级为向主 agent 投递一条**信息性消息**
+（含中断时长、上次活跃会话等状态摘要），由 agent 自主决定下一步。
 
-解决"DSH 重启后会话中断、工作丢失"的问题——重启后 agent 收到提示，可自行恢复。
+解决"DSH 重启后会话中断、工作丢失"的问题——重启后无需用户去别的会话手动输入"继续"。
 
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- 💬 **信息性消息**：重启后投递"检测到重启 + 中断时长 + 上次活跃会话"摘要，由 agent 自主决定下一步（而非命令式强制"继续"）
-- 🎯 **活动追踪**：运行期间通过 cordis 事件（`agent/session-start`、`agent/pre-step`）追踪最近活跃会话，供重启后参考
-- ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务，不 import 任何 `@deepseek-ai/dsh-*` 内部包，可在 DSH Desktop 打包环境（app.asar）运行
+- ⏭️ **会话自动恢复**（0.3.0）：重启后自动把重启前活跃的会话 resume 成 live agent 并投递通知；
+  依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
+- 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
+  `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`）
+- 💾 **节流落盘**：活动时 5 秒内合并一次写盘（不再只靠 SIGTERM），非优雅退出也不丢状态
+- ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务与事件，不 import 任何 `@deepseek-ai/dsh-*` 内部包，可在 DSH Desktop 打包环境（app.asar）运行
 
 ## 安装
 
@@ -23,19 +29,37 @@ dsh plugin --profile desktop add <本目录路径>
 
 每次 DSH 启动时：
 
-1. 读取 marker 文件（`~/.dsh/.resume-on-restart/marker.json`），记录上次的 `pid` / `lastBootAt` / `startAt`
+1. 读取 marker 文件（`~/.dsh/.resume-on-restart/marker.json`），记录上次的 `pid` / `lastBootAt` / `startAt` / `recentSessions`
 2. 判断是否重启：当前进程 `pid` ≠ marker 的 `pid` → 判定发生重启；`pid` 相同（如容器内恒为 PID 1）则对比进程启动时间 `startAt`，偏差超过 2 秒容差 → 判定发生重启
-3. 写入新的 marker（更新为当前 pid / 时间）
-4. 若判定为重启，轮询等待主 agent 出现（最长 20 秒），投递信息性消息：
-   ```
-   [resume-on-restart] 检测到 DSH 服务已重启。
-   上次运行于 ...，本次于 ... 重启完成。
-   中断约 X 秒。
-   重启前最近活跃的会话：<session-id>
-   如需继续之前的工作，或启动新任务，请自主决定下一步。
-   ```
+3. 用旧 marker 播种内存中的最近活跃列表，写入新的 marker（更新为当前 pid / 时间）
+4. 若判定为重启：
+   - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
+     （优先 `recentSessions`，兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`）；
+     对每个候选：已 live（`agents.get(id)`）直接投递；未 live 经 `sessionController.resolveAgent(id)`
+     恢复成 live agent 后投递。恢复/等待的总预算为 `restoreTimeoutMs`（默认 30 秒），超时放弃并回退。
+     成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
+   - **回退**：所有候选都失败（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
+     （最长 20 秒），投递信息性消息：
+     ```
+     [resume-on-restart] 检测到 DSH 服务已重启。
+     上次运行于 ...，本次于 ... 重启完成。
+     中断约 X 秒。
+     重启前最近活跃的会话：<session-id>
+     如需继续之前的工作，或启动新任务，请自主决定下一步。
+     ```
+   - 每次投递/恢复结果都追加记录到 `wake.log`（一行一条 JSON：`deliveredTo` / `ok` / `error`）
 
-运行期间通过 `agent/session-start` 和 `agent/pre-step` 事件持续记录最近活跃会话，下次重启时消息会包含它。
+运行期间通过 `agent/status`、`agent/inbox/inserted`、`agent/assistant-stream` 事件（payload 均含 `agent`）
+持续记录最近活跃会话列表（同 id 去重挪到最前，上限 `trackMax`），活动时节流落盘
+（`persistThrottleMs` 内合并为一次写盘），SIGTERM/SIGINT 时兜底 flush，下次重启时用于恢复/通知。
+
+### 会话自动恢复的依赖与降级
+
+会话自动恢复依赖 DSH Host 的 `sessionController` 服务（`ctx.sessionController.resolveAgent(sessionId)`）。
+插件**不把它声明为注入依赖**，而是运行时经 `ctx.reflect.get('sessionController')` 非阻塞探测：
+服务缺失、无 `resolveAgent` 方法、调用抛错/超时/返回失败分支（如 `session/not-found`）时，
+记录原因到 `wake.log` 并尝试下一个候选；全部失败自动降级为旧行为——通知主会话。
+该探测绝不阻塞插件加载，也不影响既有通知路径。
 
 ## Docker / PID 1 容器支持
 
@@ -57,6 +81,11 @@ dsh plugin --profile desktop add <本目录路径>
 | `notice` | `''` | 附加到消息末尾的自定义提示 |
 | `shutdownGraceMs` | `600000` | 关闭前"活跃即视为任务相关"的宽限窗口 |
 | `ignoredSessionPrefixes` | `['head-']` | 不追踪的会话 id 前缀（如多代理团队的根会话） |
+| `trackMax` | `5` | 最近活跃会话列表 `recentSessions` 的长度上限 |
+| `persistThrottleMs` | `5000` | 活动时节流落盘间隔（窗口内合并为一次写盘） |
+| `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
+| `restoreMax` | `1` | 最多恢复的会话数（按活跃时间新 → 旧取前 N 个候选） |
+| `restoreTimeoutMs` | `30000` | 恢复/等待的总预算（ms），超时放弃恢复并回退通知主会话 |
 
 ## 开发 / 测试
 
