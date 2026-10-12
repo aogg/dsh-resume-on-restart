@@ -16,6 +16,7 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`）
 - 💾 **节流落盘**：活动时 5 秒内合并一次写盘（不再只靠 SIGTERM），非优雅退出也不丢状态
 - ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务与事件，不 import 任何 `@deepseek-ai/dsh-*` 内部包，可在 DSH Desktop 打包环境（app.asar）运行
+- 手动结束和崩溃，两者之后都会触发自动恢复
 
 ## 安装
 
