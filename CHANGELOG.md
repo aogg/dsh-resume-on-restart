@@ -7,7 +7,8 @@
   无构建链）：在会话顶栏「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
   注册兄弟条目 `resume-on-restart`（order 10，同排同款设计 token）。正常态「重启时恢复会话」，
   悬停「取消→重启时恢复会话」；点击把当前会话标记为「重启后不自动恢复」，条目变灰、
-  文案「已取消恢复」，悬停「恢复→重启时恢复会话」；再点取消标记。条目任何状态下都不消失。
+  文案「已取消恢复」，悬停「恢复→重启时恢复会话」；再点取消标记。条目仅对恢复候选会话渲染
+  （见下方「恢复候选按停止时仍运行中过滤」等本轮补充条目）。
   当前会话 id 由 session 作用域插槽的标准 props（`sessionId`）注入，不用 window 全局
 - **插件自有状态 API**（宿主 half）：`GET /api/dsh-resume-on-restart/state?ids=...` 查询、
   `POST /api/dsh-resume-on-restart/state`（body `{ sessionId, excluded }`）标记/取消；
@@ -22,6 +23,23 @@
   先借用宿主 `connection.requestRejection`（未认证 401 等），宿主未提供该服务时回退到
   复刻 DSH 官方规则的最小判断（Host loopback/`--trusted-host`、全接口绑定时本机来源、
   拒绝 `sec-fetch-site: cross-site`、Origin 同源）；webServer 服务缺失仅 console.warn，不阻断加载
+- **恢复候选按「停止时仍运行中」过滤**（本轮补充，恢复与开关显示同一口径）：判定口径 =
+  DSH 停止那一刻该会话 status 为 `running`（干活中被打断）。`pickRestoreTargets` 只把
+  `running !== false` 的 `recentSessions` 条目当候选（缺失按 true，兼容旧 marker，旧恢复行为
+  不变；legacy `lastSessionId` 回退路径同样视为候选）；`recentSessions` 全部 `running: false`
+  （正常结束）时不恢复，也不会经旧字段回退混回候选
+- **marker `recentSessions` 条目新增 `running` 字段**（本轮补充）：由 `agent/status` 事件
+  （payload `{ agent, status }`）写入——`'running'` → true、`'idle'` → false；其余活动事件
+  不带 status，沿用同 id 条目已有值；新条目缺省 false，序列化时缺失写 false。启动播种自旧
+  marker 的候选条目回填 `running: true`（它们正是上次停止时仍运行中的会话），避免
+  「本进程 GET 显示候选、下次重启却不恢复」的口径分裂
+- **`GET /state` 响应新增 `restoreCandidates`**（本轮补充）：`{ [id]: true }`，取自宿主内存
+  `recentSessions` 经新纯函数 `collectRestoreCandidateIds`（lib/detect.js）的实时视图，
+  不看排除集合——被排除但仍是候选的会话仍显示灰色开关
+- **顶栏开关显示门控与刷新时机**（本轮补充）：客户端只在当前会话命中 `restoreCandidates`
+  时渲染条目，正常结束的会话返回 null（字段缺失/响应异常/请求失败都按不显示）；
+  查询时机为挂载/切换会话时、`window` `focus` 时、每 15 秒轮询一次（页面隐藏时跳过该轮，
+  cancelled 标志防串态）；悬停文案、POST 标记/取消、失败回滚、防重复点击均不变
 
 ## [0.3.1] - 2026-10-12
 

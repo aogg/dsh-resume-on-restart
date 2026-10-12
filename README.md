@@ -9,13 +9,15 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- ⏭️ **会话自动恢复**（0.3.0）：重启后自动把重启前活跃的会话 resume 成 live agent 并投递通知；
+- ⏭️ **会话自动恢复**（0.3.0）：重启后自动把重启前停止时仍运行中的活跃会话 resume 成 live agent 并投递通知；
   依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
 - 🖱️ **会话顶栏开关**（0.4.0）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
-  点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效
+  点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
+  条目只对会被重启恢复的会话显示（DSH 停止那一刻仍运行中），正常结束的会话不显示
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
-  `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`）
+  `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`，
+  条目含 `running` 标记：最后已知是否运行中，由 `agent/status` 维护）
 - 💾 **节流落盘**：活动时 5 秒内合并一次写盘（不再只靠 SIGTERM），非优雅退出也不丢状态
 - ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务与事件，不 import 任何 `@deepseek-ai/dsh-*` 内部包，可在 DSH Desktop 打包环境（app.asar）运行
 - 手动结束和崩溃，两者之后都会触发自动恢复
@@ -37,7 +39,9 @@ dsh plugin --profile desktop add <本目录路径>
 3. 用旧 marker 播种内存中的最近活跃列表，写入新的 marker（更新为当前 pid / 时间）
 4. 若判定为重启：
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
-     （优先 `recentSessions`，兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`）；
+     （优先 `recentSessions`，只取停止时仍运行中的条目——`running !== false`，缺失视为候选以兼容旧
+     marker；兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`；
+     正常结束的会话不恢复，也不会经旧字段回退混回候选）；
      **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log`，
      `error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
      未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
@@ -54,7 +58,8 @@ dsh plugin --profile desktop add <本目录路径>
      ```
    - 每次投递/恢复结果都追加记录到 `wake.log`（一行一条 JSON：`deliveredTo` / `ok` / `error`）
 
-运行期间通过 `agent/status`、`agent/inbox/inserted`、`agent/assistant-stream` 事件（payload 均含 `agent`）
+运行期间通过 `agent/status`、`agent/inbox/inserted`、`agent/assistant-stream` 事件（payload 均含 `agent`，
+`agent/status` 另带 `status`：`'running'`/`'idle'`，写进条目的 `running` 标记；其余事件沿用条目已有值）
 持续记录最近活跃会话列表（同 id 去重挪到最前，上限 `trackMax`），活动时节流落盘
 （`persistThrottleMs` 内合并为一次写盘），SIGTERM/SIGINT 时兜底 flush，下次重启时用于恢复/通知。
 
@@ -69,7 +74,9 @@ dsh plugin --profile desktop add <本目录路径>
 ### 会话顶栏开关（0.4.0，仅当前会话生效）
 
 web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
-里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token，条目在任何状态下都不消失：
+里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token。显示门控：条目只对恢复候选会话渲染
+——即 DSH 停止那一刻仍 `running` 的会话（见下方 `GET /state` 的 `restoreCandidates`）；
+正常结束的会话不渲染任何 DOM：
 
 | 状态 | 文案 | 悬停文案 | 行为 |
 |---|---|---|---|
@@ -82,8 +89,14 @@ web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conv
 
 客户端（`lib/client.js`，手写 bundle、仅依赖 baseline 的 react）通过以下插件自有 API 读写状态：
 
-- `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso } }`；请求失败按「未排除」显示
+- `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso }, restoreCandidates: { [id]: true } }`。
+  `restoreCandidates` 取自宿主内存 `recentSessions` 的实时视图（新纯函数 `collectRestoreCandidateIds`），
+  不看排除集合——被排除但仍是候选的会话仍显示灰色开关；当前会话不在其中、字段缺失或请求失败
+  都按「不显示」处理
 - `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
+
+候选状态的查询时机：挂载/切换会话时一次、`window` `focus` 时一次、每 15 秒轮询一次
+（`document.visibilityState !== 'visible'` 时跳过该轮）；POST 成功后不重新拉取候选集合。
 
 `sessionId` 由插槽框架注入（session 作用域标准 props，见 `@deepseek-ai/dsh-client-ui-session`
 对 `SessionStandardProps` 的 merge 声明），不使用任何 window 全局。
