@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.5.0] - 2026-10-12
+
+### Added
+- **重启日志 `restarts.ndjson`**（宿主 half）：`<stateDir>/restarts.ndjson`（默认
+  `~/.dsh/.resume-on-restart/restarts.ndjson`），追加写、一行一条 JSON、上限 200 条
+  （超出丢最旧，重写时顺带剔除损坏行）、单行损坏跳过不丢整份日志。开机
+  `detectRestart === true` 时先写一条 `boot` 记录（`at`/`prevBootAt`/`downtimeMs`/
+  `pid`/`prevPid`/`startAt`/`prevStartAt`/`detectBasis`/`reason`/`shutdown`/`origin`/
+  `runningSessions`），恢复流程每结算一个候选再写一条 `restore` 记录
+  （`{ type, bootAt, id, result: resumed|failed|excluded|skipped-budget, error, at }`）；
+  `wake.log` 保留不动。设置弹窗经只读路由按 boot 分组倒序展示
+- **停机归因**：SIGTERM/SIGINT 兜底 flush 时同步写 `<stateDir>/pending-shutdown.json`
+  （`{ signal, at }`，marker 的 `when` 字段保留作旧版兼容）；下次开机读取归因后
+  立即删除（存根只消费一次，避免遗留存根把后续 crash 误归因为 signal）。读不到
+  且旧 marker 无 `when` = 崩溃 / 强杀 / 容器重启。原因标签：
+  `power-button`（有 origin）/ `signal`（有 pending-shutdown 或 marker.when、无 origin）/
+  `crash`（两者皆无）/ `unknown`（形状异常兜底），写入 boot 记录的 `reason` 字段
+- **origin 匹配**：开机扫描 `~/.dsh/power-restart/*.status.json`（单文件损坏只丢该
+  文件），取 `committedAt` 落在 [上次启动, 本次启动] 闭区间的最近一条作为本次重启
+  发起方，整形为 `{ source: 'power-button', restartId, kind, sessionId, requestedAt }`
+  写入 boot 记录；没有命中 → `origin: null`（原因归 shutdown 侧）
+- **全量恢复（解「重启后只有打开的那个界面才回复对话」）**：`restoreMax` 默认改为
+  `0` = 不限——遍历全部 `running !== false` 候选（仍尊重用户排除名单与
+  `ignoredSessionPrefixes`）；正整数语义不变（按活跃时间新 → 旧取前 N 个）。
+  `restoreTimeoutMs`（默认 30s）总预算按候选数平摊、每候选最低 5s；超出预算的
+  候选不再静默丢弃，逐个记 `skipped-budget`；失败继续下一个候选的行为不变
+- **只读路由 `GET /api/dsh-resume-on-restart/restarts`**：返回
+  `{ ok, entries, max }`（entries 为 restarts.ndjson 全部条目，时间正序，客户端自行
+  倒序展示）。沿用现有围栏模式：宿主 `connection.requestRejection` 优先，
+  回退自带最小浏览器信任围栏（只读 GET，同 /state 的规则）
+- **设置弹窗「重启日志」section**（客户端 half，slot `settings.section`，写法照抄
+  dsh-prompt-history）：倒序列表，每条显示 启动时间、原因标签徽标、来源
+  （origin.kind + sessionId 截断）、停机时长、恢复成功 x/y；点击展开该条 boot 详情
+  （上次启动 / pid 变化 / 判定依据 / 停机归因 / origin / 恢复候选列表）与逐会话
+  restore 明细（结果徽标 + 截断会话 id + 错误）。文案走宿主 locale 服务
+  （`dsh-resume-on-restart` 命名空间，zh/en 字典、zh 为权威，未命中回退内置 zh），
+  样式自带（一次注入 `<style>`，全部走 DSH 设计 token，明暗自适应）；
+  挂载拉取一次 + 手动刷新，失败显示错误文案并 console.warn。客户端 bundle 属
+  profile 产物，需下次 DSH 重启重建后才在浏览器生效
+
+### Changed
+- `restoreMax` 默认值 `1` → `0`（不限），`cordis.patch.yml` 内置配置同步改为 `0`
+- 宿主 `deliver()` 返回值从 boolean 改为 `{ ok, error }`（stable union），供恢复流程
+  把投递失败原因同时写入 wake.log 与重启日志
+
+### Tests
+- `lib/detect.test.js` 新增 18 例（合计 60）：`detectBasisOf`、`normalizeRestoreMax`
+  （0=不限与 pickRestoreTargets 的衔接）、`attributeShutdown`（pending-shutdown 有效 /
+  回退 marker.when / 都无 = crash）、`shutdownReasonOf` 四标签、`pickOriginRecord`
+  时间窗匹配（窗口内取最近、窗外排除、闭区间边界、损坏记录跳过、非法输入）、
+  `parseNdjson` / `serializeNdjson` / `capNdjsonEntries` / `compactNdjson`
+  （损坏行跳过、超出丢最旧、互逆）
+
 ## [0.4.0] - 2026-10-12
 
 ### Added

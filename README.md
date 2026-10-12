@@ -9,8 +9,13 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- ⏭️ **会话自动恢复**（0.3.0）：重启后自动把重启前停止时仍运行中的活跃会话 resume 成 live agent 并投递通知；
-  依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量）：重启后自动把重启前停止时仍运行中的**全部**活跃会话
+   resume 成 live agent 并投递通知；依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
+  重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/skipped-budget），
+  上限 200 条、损坏行跳过；wake.log 保留不动
+- ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
+  倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
 - 🖱️ **会话顶栏开关**（0.4.0）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
   点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
   条目只对会被重启恢复的会话显示（DSH 停止那一刻仍运行中），正常结束的会话不显示
@@ -38,14 +43,20 @@ dsh plugin --profile desktop add <本目录路径>
 2. 判断是否重启：当前进程 `pid` ≠ marker 的 `pid` → 判定发生重启；`pid` 相同（如容器内恒为 PID 1）则对比进程启动时间 `startAt`，偏差超过 2 秒容差 → 判定发生重启
 3. 用旧 marker 播种内存中的最近活跃列表，写入新的 marker（更新为当前 pid / 时间）
 4. 若判定为重启：
+   - **写 boot 记录**（0.5.0，重启日志）：先做停机归因（读 `<stateDir>/pending-shutdown.json`
+     并删除；读不到回退旧 marker 的 `when` 字段；都没有 = crash）与 origin 匹配（扫描
+     `~/.dsh/power-restart/*.status.json`，取 `committedAt` 落在 [上次启动, 本次启动] 的最近一条），
+     得出原因标签（`power-button` / `signal` / `crash` / `unknown`）后写一条 boot 记录到
+     `restarts.ndjson`（随后恢复流程每结算一个候选再追加一条 restore 记录）
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
      （优先 `recentSessions`，只取停止时仍运行中的条目——`running !== false`，缺失视为候选以兼容旧
      marker；兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`；
      正常结束的会话不恢复，也不会经旧字段回退混回候选）；
-     **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log`，
-     `error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
+     **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log` 与
+     重启日志，`error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
      未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
-     恢复/等待的总预算为 `restoreTimeoutMs`（默认 30 秒），超时放弃并回退。
+     恢复的总预算为 `restoreTimeoutMs`（默认 30 秒）按候选数平摊、每候选最低 5 秒，
+     超出预算的候选记 `skipped-budget`；失败继续下一个候选。
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
    - **回退**：所有候选都失败/被排除（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
@@ -107,6 +118,33 @@ DSH 官方规则的判断——Host 必须是 loopback 或 `--trusted-host` 声�
 全接口绑定时要求本机来源、拒绝 `sec-fetch-site: cross-site`、带 Origin 时必须同源。
 webServer 服务缺失时仅 console.warn，不阻断插件加载。
 
+### 重启日志与设置弹窗（0.5.0）
+
+每次重启的观测数据落在 `<stateDir>/restarts.ndjson`（默认
+`~/.dsh/.resume-on-restart/restarts.ndjson`）：追加写、一行一条 JSON、上限 200 条
+（超出丢最旧）、单行损坏跳过不丢整份日志。两类记录：
+
+- **boot 记录**（开机判定为重启时写一条）：`at` / `prevBootAt` / `downtimeMs` / `pid` /
+  `prevPid` / `startAt` / `prevStartAt` / `detectBasis`（`startAt-diff` | `bootAt-diff`）/
+  `reason`（原因标签）/ `shutdown`（`{ seen, signal, at }` 停机归因）/ `origin`
+  （`{ source, restartId, kind, sessionId, requestedAt }` 或 `null`）/ `runningSessions`
+  （本次参与恢复的候选列表）
+- **restore 记录**（恢复流程每结算一个候选写一条）：
+  `{ type, bootAt, id, result: resumed|failed|excluded|skipped-budget, error, at }`
+
+原因标签口径：`power-button`（有 origin，重启由 power-restart 流程发起）/ `signal`
+（有 pending-shutdown 存根或旧 marker `when`、无 origin，即 SIGTERM/SIGINT 正常停机）/
+`crash`（两者皆无：崩溃 / 强杀 / 容器重启）/ `unknown`（形状异常兜底）。
+
+web 设置弹窗新增「重启日志」section（slot `settings.section`，写法照抄 dsh-prompt-history）：
+倒序列表展示每次重启的 启动时间、原因标签徽标、来源（`origin.kind` + 截断 sessionId）、
+停机时长、恢复成功 `x/y`；点击展开 boot 详情与逐会话 restore 明细。文案走宿主 locale
+服务（zh/en 字典、zh 为权威），样式自带（DSH 设计 token，明暗自适应）。
+
+数据经只读路由获取：`GET /api/dsh-resume-on-restart/restarts` → `{ ok, entries, max }`
+（entries 为全部条目，时间正序，客户端自行倒序；围栏与 `/state` 相同）。客户端 bundle 属
+profile 产物，需下次 DSH 重启重建后才在浏览器生效。
+
 ## Docker / PID 1 容器支持
 
 在 Docker 容器里 DSH 服务永远以 PID 1 运行，`pid` 无法区分两次运行（旧版因此检测不到容器内重启）。0.2.0 起的检测方式：
@@ -130,17 +168,19 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
 | `trackMax` | `5` | 最近活跃会话列表 `recentSessions` 的长度上限 |
 | `persistThrottleMs` | `5000` | 活动时节流落盘间隔（窗口内合并为一次写盘） |
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
-| `restoreMax` | `1` | 最多恢复的会话数（按活跃时间新 → 旧取前 N 个候选） |
-| `restoreTimeoutMs` | `30000` | 恢复/等待的总预算（ms），超时放弃恢复并回退通知主会话 |
+| `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部 `running !== false` 候选，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
+| `restoreTimeoutMs` | `30000` | 恢复的总预算（ms），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
 
 ## 开发 / 测试
 
 ```bash
-# 运行单元测试（重启判定、排除过滤、消息构建）
+# 运行单元测试（重启判定、停机归因、origin 匹配、ndjson 裁剪、排除过滤、消息构建）
 npm test
 ```
 
-测试覆盖 `lib/detect.js` 中的纯函数（重启判定、恢复候选挑选与排除过滤、信息性消息构建），不依赖 DSH 运行时。
+测试覆盖 `lib/detect.js` 中的纯函数（重启判定与检测依据、恢复候选挑选与排除过滤、
+停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建），
+不依赖 DSH 运行时。
 
 ## License
 
