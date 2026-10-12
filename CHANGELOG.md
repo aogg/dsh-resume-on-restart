@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1] - 2026-10-12
+
+### Fixed
+- 重启后通知投递必失败（会话采纳消息即抛
+  `SessionFormatError("format v4 message requires a producer-owned source kind")`，
+  本轮运行失败、用户点重试再次失败）：通知消息 source 沿用了已废弃的 v3 写法
+  `{ kind: 'plugin', plugin: 'dsh-resume-on-restart', ... }`，而 DSH 会话格式 v4 的
+  source 校验要求 `source.kind` 为非空字符串且 `!== 'plugin'`。
+  改为 producer-owned kind `{ kind: 'dsh-resume-on-restart', form: 'notice', summary: ... }`
+  ——选裸插件名而非 `plugin:<name>` 映射形式，是因本环境同类第三方插件 dsh-rules-auto
+  即用裸插件名作 kind，已在 v4 会话日志中验证可正常持久化
+
+### Changed
+- 通知消息对象构造抽出为可单测的纯函数 `createNoticeMessage({ text, bootAt })`
+  （lib/detect.js，内部 `content=[{type:'text',text}]`、`role:'user'`、id 用 UUID），
+  `deliver()` 改为调用它；移除 lib/index.js 中不再被别处使用的 `createUserMessage`。
+  运行行为除 source 形状外完全不变
+
 ## [0.3.0] - 2026-10-09
 
 ### Fixed

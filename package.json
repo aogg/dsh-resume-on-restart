@@ -1,6 +1,6 @@
 {
   "name": "dsh-resume-on-restart",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH 插件：检测 DSH 服务重启后自动恢复重启前活跃的会话（依赖 Host sessionController，缺失时降级为通知主会话），让中断的工作自动继续。仅依赖 cordis ctx 服务，兼容 DSH Desktop 打包环境。",
   "keywords": [
     "dsh",
