@@ -14,5 +14,5 @@
         trackMax: 5
         persistThrottleMs: 5000
         restoreSessions: true
-        restoreMax: 1
+        restoreMax: 0
         restoreTimeoutMs: 30000
