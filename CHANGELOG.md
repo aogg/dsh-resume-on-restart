@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.0] - 2026-10-12
+
+### Added
+- **web 会话顶栏开关**（客户端 half `lib/client.js`，手写 bundle、仅依赖 baseline 的 react，
+  无构建链）：在会话顶栏「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
+  注册兄弟条目 `resume-on-restart`（order 10，同排同款设计 token）。正常态「重启时恢复会话」，
+  悬停「取消→重启时恢复会话」；点击把当前会话标记为「重启后不自动恢复」，条目变灰、
+  文案「已取消恢复」，悬停「恢复→重启时恢复会话」；再点取消标记。条目任何状态下都不消失。
+  当前会话 id 由 session 作用域插槽的标准 props（`sessionId`）注入，不用 window 全局
+- **插件自有状态 API**（宿主 half）：`GET /api/dsh-resume-on-restart/state?ids=...` 查询、
+  `POST /api/dsh-resume-on-restart/state`（body `{ sessionId, excluded }`）标记/取消；
+  sessionId 非空且 ≤200 字符，排除集合上限 1000 条、超出丢最旧。客户端请求失败按「未排除」
+  显示并 console.warn，不弹窗；POST 期间防重复点击，失败回滚 UI
+- **排除集合持久化**：`<stateDir>/excluded-sessions.json`（`{ sessions: { [id]: excludedAtISO } }`，
+  损坏按空处理、写盘失败只告警），重启 DSH 后仍然有效
+- **恢复流程跳过被排除的会话**：候选在逐个尝试前经新纯函数
+  `filterExcludedCandidates(candidates, excludedMap)`（lib/detect.js）过滤，
+  被排除的候选记入 wake.log（`error: "excluded by user"`）；全部被排除/失败仍回退通知主会话（文案不变）
+- **自有路由的浏览器信任围栏**：本插件路由前缀比宿主 `/api` 长、不会自动经过宿主围栏，
+  先借用宿主 `connection.requestRejection`（未认证 401 等），宿主未提供该服务时回退到
+  复刻 DSH 官方规则的最小判断（Host loopback/`--trusted-host`、全接口绑定时本机来源、
+  拒绝 `sec-fetch-site: cross-site`、Origin 同源）；webServer 服务缺失仅 console.warn，不阻断加载
+
 ## [0.3.1] - 2026-10-12
 
 ### Fixed

@@ -11,6 +11,8 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
 - ⏭️ **会话自动恢复**（0.3.0）：重启后自动把重启前活跃的会话 resume 成 live agent 并投递通知；
   依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- 🖱️ **会话顶栏开关**（0.4.0）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
+  点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`）
@@ -36,10 +38,12 @@ dsh plugin --profile desktop add <本目录路径>
 4. 若判定为重启：
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
      （优先 `recentSessions`，兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`）；
-     对每个候选：已 live（`agents.get(id)`）直接投递；未 live 经 `sessionController.resolveAgent(id)`
-     恢复成 live agent 后投递。恢复/等待的总预算为 `restoreTimeoutMs`（默认 30 秒），超时放弃并回退。
+     **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log`，
+     `error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
+     未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
+     恢复/等待的总预算为 `restoreTimeoutMs`（默认 30 秒），超时放弃并回退。
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
-   - **回退**：所有候选都失败（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
+   - **回退**：所有候选都失败/被排除（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
      ```
      [resume-on-restart] 检测到 DSH 服务已重启。
@@ -62,6 +66,34 @@ dsh plugin --profile desktop add <本目录路径>
 记录原因到 `wake.log` 并尝试下一个候选；全部失败自动降级为旧行为——通知主会话。
 该探测绝不阻塞插件加载，也不影响既有通知路径。
 
+### 会话顶栏开关（0.4.0，仅当前会话生效）
+
+web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
+里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token，条目在任何状态下都不消失：
+
+| 状态 | 文案 | 悬停文案 | 行为 |
+|---|---|---|---|
+| 正常 | 重启时恢复会话 | 取消→重启时恢复会话 | 点击 → 标记本会话「重启后不自动恢复」，条目变灰 |
+| 已排除 | 已取消恢复（灰色） | 恢复→重启时恢复会话 | 点击 → 取消标记，回到正常态 |
+
+生效范围**仅当前会话**：排除集合持久化在 `~/.dsh/.resume-on-restart/excluded-sessions.json`
+（`{ "sessions": { "<sessionId>": "<排除时间 ISO>" } }`，上限 1000 条、超出丢最旧），
+重启 DSH 后仍然有效；重启后的恢复流程会跳过被排除的会话（见上方步骤 4）。
+
+客户端（`lib/client.js`，手写 bundle、仅依赖 baseline 的 react）通过以下插件自有 API 读写状态：
+
+- `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso } }`；请求失败按「未排除」显示
+- `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
+
+`sessionId` 由插槽框架注入（session 作用域标准 props，见 `@deepseek-ai/dsh-client-ui-session`
+对 `SessionStandardProps` 的 merge 声明），不使用任何 window 全局。
+
+该路由前缀比宿主 `/api` 长、不会自动经过宿主的浏览器信任围栏，插件自带最小围栏：
+先借用宿主 `connection.requestRejection`（未认证 401 等），宿主未提供该服务时回退到复刻自
+DSH 官方规则的判断——Host 必须是 loopback 或 `--trusted-host` 声明的 authority、
+全接口绑定时要求本机来源、拒绝 `sec-fetch-site: cross-site`、带 Origin 时必须同源。
+webServer 服务缺失时仅 console.warn，不阻断插件加载。
+
 ## Docker / PID 1 容器支持
 
 在 Docker 容器里 DSH 服务永远以 PID 1 运行，`pid` 无法区分两次运行（旧版因此检测不到容器内重启）。0.2.0 起的检测方式：
@@ -76,7 +108,7 @@ dsh plugin --profile desktop add <本目录路径>
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 插件开关 |
-| `stateDir` | `.resume-on-restart` | marker/状态文件存放目录（相对 DSH_HOME） |
+| `stateDir` | `.resume-on-restart` | marker/状态文件存放目录（相对 DSH_HOME；排除集合也在这里的 `excluded-sessions.json`） |
 | `target` | `primary` | 唤醒目标（`primary`=主 agent，或指定会话 id） |
 | `wakeup` | `true` | 是否真正唤醒（`false` 则只注入不唤醒） |
 | `notice` | `''` | 附加到消息末尾的自定义提示 |
@@ -91,11 +123,11 @@ dsh plugin --profile desktop add <本目录路径>
 ## 开发 / 测试
 
 ```bash
-# 运行单元测试（重启检测、消息构建）
+# 运行单元测试（重启判定、排除过滤、消息构建）
 npm test
 ```
 
-测试覆盖 `lib/detect.js` 中的纯函数（重启判定、信息性消息构建），不依赖 DSH 运行时。
+测试覆盖 `lib/detect.js` 中的纯函数（重启判定、恢复候选挑选与排除过滤、信息性消息构建），不依赖 DSH 运行时。
 
 ## License
 
