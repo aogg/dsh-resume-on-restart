@@ -84,6 +84,32 @@ dsh plugin --profile desktop add <本目录路径>
 记录原因到 `wake.log` 并尝试下一个候选；全部失败自动降级为旧行为——通知主会话。
 该探测绝不阻塞插件加载，也不影响既有通知路径。
 
+### 无用户提示词的会话不自动激活（0.6.0 守卫）
+
+"恢复候选投递"与"fallback 回退唤醒"两条路径在投递前都会先判定目标会话**是否有过真实
+人工输入**，没有（或判定不了）就跳过并记日志——避免把"检测到 DSH 服务已重启……请自主
+决定下一步"的通知灌进一个从未有用户输入的空会话，导致模型无人指示自主跑真实工作
+（0.5.x 事故：fallback 取 `roots[0]` 拿到空会话 `session-78b03158` 被唤醒）。
+
+判定口径（实测 DSH 会话记录 v4）：读取 `<DSH_HOME>/sessions/<项目目录>/[session-]<id>/
+session.v4.jsonl[.zstd]`（主会话目录带 `session-` 前缀、子代理会话为裸 uuid；`.zstd` 为
+多帧拼接，按帧逐个解压拼接），存在某行 `type === 'user/message'` 且消息对象
+`source.kind === 'user'` 的记录即算有人工输入（消息对象通常直接在 `data` 上，少数嵌在
+`data.message` 下，两种形状都兼容）。插件/规则注入消息的 kind（`dsh-resume-on-restart`、
+`dsh-rules-auto`、`runtime-context`、`time-context` 等）不算人工输入；`source` 缺失一律
+视为非人工。
+
+fail-closed：记录文件缺失（`session-file-missing`）、运行环境 zlib 无 zstd 能力
+（`zstd-unsupported`，见下方 node 版本要求）、读取/解压异常（`scan-error`）都按
+"判定不了"处理，与"无人工输入"一样跳过投递。跳过会记入 `wake.log`（`ok: false`）与
+重启日志（`result: 'skipped-no-human-prompt'`，设置弹窗可见）；恢复候选逐个继续尝试
+下一个，fallback 则结束本轮回退、不向 roots 更深处找补。
+
+关闭方式：配置 `requireHumanPrompt: false` 即完全关闭守卫（恢复旧行为）。
+注意 zstd 解压依赖 node ≥ 23.8 内置的 `zlib.zstdDecompressSync`；更老的 node 上所有
+`.zstd` 记录都会被判 `zstd-unsupported` 而拦下（fail-closed），无压缩的
+`session.v4.jsonl` 不受影响。
+
 ### 会话顶栏开关（0.4.0，仅当前会话生效）
 
 web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
@@ -172,6 +198,7 @@ profile 产物，需下次 DSH 重启重建后才在浏览器生效。
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
 | `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部 `running !== false` 候选，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
 | `restoreTimeoutMs` | `30000` | 恢复的总预算（ms），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
+| `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
 
 ## 开发 / 测试
 
@@ -181,7 +208,9 @@ npm test
 ```
 
 测试覆盖 `lib/detect.js` 中的纯函数（重启判定与检测依据、恢复候选挑选与排除过滤、
-停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建），
+停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建、0.6.0 的
+human-prompt 守卫判定）与 `lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
+JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描），
 不依赖 DSH 运行时。
 
 ## License

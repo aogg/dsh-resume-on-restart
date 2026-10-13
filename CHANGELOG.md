@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.6.0] - 2026-10-13
+
+### Added
+- **无用户提示词的会话不再被自动激活（恢复/回退投递守卫）**：新增 lib/session-scan.js，
+  投递前扫描目标会话的记录文件（`<DSH_HOME>/sessions/<项目目录>/[session-]<id>/session.v4.jsonl[.zstd]`）
+  判定是否有过真实人工输入；`restoreCandidates()` 在逐个尝试候选前（先于 agents.get /
+  resumeSession）、`fallbackWake()` 在拿到回退目标后（立即与轮询两条路径）都先过该守卫，
+  不通过就跳过投递并记日志（wake.log `ok:false` + 重启日志 `result: 'skipped-no-human-prompt'`，
+  后者经 classifyHumanPromptGuard 输出 stable union），继续处理后续候选/结束本轮回退。
+  判定口径（实测）：记录为 JSONL，真实人工输入 = 存在某行 `type === 'user/message'` 且消息
+  对象 `source.kind === 'user'`（消息对象通常直接在 `data` 上，少数嵌在 `data.message` 下，
+  两种形状都兼容）；插件/规则注入消息的 kind（`dsh-resume-on-restart`、`dsh-rules-auto`、
+  `runtime-context`、`time-context` 等）不算人工输入；`source` 缺失一律视为非人工。
+  fail-closed：文件缺失（`session-file-missing`）、运行环境 zlib 无 zstd 能力（node < 23.8，
+  `zstd-unsupported`）、解压/读取异常（`scan-error`）一律按"判定不了"拦截。新增配置
+  `requireHumanPrompt`（默认 `true`），设为 `false` 关闭守卫 = 完全旧行为
+- **多帧拼接的 zstd 会话记录解压**：实测 `session.v4.jsonl.zstd` 不是单个 zstd 流，而是每批
+  追加的记录各自压缩成一帧后顺序拼接；对整文件一次 `zstdDecompressSync` 只解出第一帧
+  （通常只有 `session` 头），真实会话会被整体误判成 none、守卫会把几乎所有会话都拦掉。
+  解压改为按 zstd 帧魔法号切片逐帧解后拼接（个别帧解不出则合并/跳过，尽力而为——少读
+  记录只往拦截方向错），并在 680+ 真实会话上验证：无真实输入的空会话判 none、有真实
+  用户提示词的会话判 human
+
+### Fixed
+- **空会话被 fallback 唤醒后自主干活（0.5.x 事故）**：重启后恢复候选 `8fc70d1a`（子代理
+  会话）恢复失败，回退路径 fallbackWake 取 `scope.agents.roots()[0]`，拿到一个从未有过
+  任何用户输入的空会话 `session-78b03158`，把"检测到 DSH 服务已重启……请自主决定下一步"
+  的通知灌进去，导致模型无人指示自主跑了一轮真实工作。现两条投递路径都要求目标会话
+  有过真实人工输入（见上），没有或判定不了就跳过，该空会话在真实数据上验证为被正确拦截
+
+### Tests
+- 新增 lib/session-scan.test.js（`node --test`，无 e2e）：`isHumanPromptRecord`
+  （kind=user 真、各注入 kind 与缺失 source 假、畸形输入假）、`hasHumanPromptInText`
+  （坏行混入、命中即真、空/非字符串假）、`findSessionRecordFile`（mkdtemp 临时目录树下
+  主会话/子代理目录命中、找不到 null、非法 id null）、`scanSessionHasHumanPrompt`
+  （真实 `zlib.zstdCompressSync` 压缩 → human/none、多帧拼接形状、无压缩 jsonl、
+  文件缺失 → session-file-missing、损坏 zstd → scan-error；环境无 zstd 能力时该组
+  用例自动 skip）；lib/detect.test.js 追加 `classifyHumanPromptGuard` 四分支用例
+
 ## [0.5.2] - 2026-10-13
 
 ### Fixed

@@ -16,3 +16,4 @@
         restoreSessions: true
         restoreMax: 0
         restoreTimeoutMs: 30000
+        requireHumanPrompt: true
