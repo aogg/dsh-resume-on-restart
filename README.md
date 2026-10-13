@@ -77,7 +77,9 @@ dsh plugin --profile desktop add <本目录路径>
 ### 会话自动恢复的依赖与降级
 
 会话自动恢复依赖 DSH Host 的 `sessionController` 服务（`ctx.sessionController.resolveAgent(sessionId)`）。
-插件**不把它声明为注入依赖**，而是运行时经 `ctx.reflect.get('sessionController')` 非阻塞探测：
+插件**不把它声明为注入依赖**，而是运行时经 `ctx.reflect.get('sessionController')` 非阻塞探测；
+该服务静态依赖 agents 等 11 个服务，按依赖序晚于 `agents` 激活，探测扑空时在候选的预算切片内
+每 500ms 轮询等待服务就绪（0.5.2 起），切片耗尽才判该候选失败（error 区分"等待服务超时"）。
 服务缺失、无 `resolveAgent` 方法、调用抛错/超时/返回失败分支（如 `session/not-found`）时，
 记录原因到 `wake.log` 并尝试下一个候选；全部失败自动降级为旧行为——通知主会话。
 该探测绝不阻塞插件加载，也不影响既有通知路径。

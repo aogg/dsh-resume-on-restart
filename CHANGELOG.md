@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.2] - 2026-10-13
+
+### Fixed
+- **重启后恢复候选全部失败（立即失败，30s 预算从未被消耗）**：`sessionController`
+  服务静态依赖 `agents` 等 11 个服务（`dsh-api-session-controller` 内 `static inject`），
+  按 cordis 依赖序必然晚于 `agents` 激活；而恢复流程原先在 `ctx.inject(['agents'])`
+  回调里立即经 `ctx.reflect.get('sessionController')` 非阻塞探测，拿不到即抛
+  `sessionController service unavailable`——开机后百毫秒内所有候选逐个立即失败，
+  只能走降级通知。现改为在候选的预算切片内每 500ms（`SERVICE_POLL_MS`）轮询等待
+  服务就绪，就绪即恢复；切片耗尽才判该候选失败，error 文案区分「等待服务超时」
+  （`sessionController service not ready within <N>ms`），后续候选仍按原预算平摊
+  （每候选最低 5s、总预算 `restoreTimeoutMs` 封顶），全部失败仍走既有
+  `fallbackWake` 降级。已 live 候选（`agents.get` 直接可得）不经过等待，照旧直接
+  投递；marker、`/state`、restarts 只读路由与 wake.log / restarts.ndjson 记录结构
+  均不变。 cordis 仅在提供方 fiber 启动时注册服务，无法低成本预判某环境「永不提供」
+  该服务，故未加跳过等待的特判，等待总量由既有预算兜底
+
 ## [0.5.1] - 2026-10-12
 
 ### Fixed
