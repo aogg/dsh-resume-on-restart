@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0] - 2026-10-14
+
+### Fixed
+- **等服务挤占候选预算（多候选时首个候选必然等待超时）**：`sessionController` 按依赖序
+  晚于 `agents` 激活，0.5.2 把等待放进每个候选的预算切片后，候选一多每份切片就被摊薄
+  ——实测 4 候选 × 30s 总预算 = 每候选 7.5s，而该次启动服务实际 ~13s 才就绪，首个候选
+  必然以 `sessionController service not ready within 7487ms` 失败。现把"等服务"拆出
+  独立总预算：`restoreCandidates()` 进入候选循环前用新配置 `serviceWaitTimeoutMs`
+  （默认 `30000`，与 `restoreTimeoutMs` 相互独立）一次性全局轮询等待（间隔仍为
+  `SERVICE_POLL_MS` 500ms），结果与耗时记入 `wake.log`（就绪记
+  `sessionController ready after <N>ms`）。就绪后候选阶段不再等服务：`resumeSession`
+  的轮询退化为一次防御式即时检查（取不到即抛 `sessionController service unavailable`，
+  不再等待），`resolveAgent` 仍用 `withTimeout` 按候选剩余预算封顶；`restoreTimeoutMs`
+  语义收窄为"候选阶段总预算"，自服务就绪、进入候选循环前起算（等待已耗时间不占它）。
+  等待超时（服务始终未就绪）不逐候选空转：`wake.log` 记一条
+  `service-wait-timeout: sessionController not ready within <N>ms` 后直接回退
+  `fallbackWake` 降级通知，保证通知必达。已 live 候选（`agents.get` 直接可得）的
+  处理顺序不变；marker、`/state`、restarts 只读路由与 restarts.ndjson 记录结构均不变
+
 ## [0.6.0] - 2026-10-13
 
 ### Added

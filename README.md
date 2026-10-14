@@ -55,8 +55,11 @@ dsh plugin --profile desktop add <本目录路径>
      **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log` 与
      重启日志，`error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
      未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
-     恢复的总预算为 `restoreTimeoutMs`（默认 30 秒）按候选数平摊、每候选最低 5 秒，
-     超出预算的候选记 `skipped-budget`；失败继续下一个候选。
+     恢复候选前先用独立预算 `serviceWaitTimeoutMs`（0.7.0，默认 30 秒）一次性全局
+     等待 `sessionController` 就绪（结果与耗时记入 `wake.log`；超时记
+     `service-wait-timeout` 并跳过全部候选直接回退，不逐候选空转）；候选阶段不再
+     等服务，总预算 `restoreTimeoutMs`（默认 30 秒）自服务就绪起算、按候选数平摊、
+     每候选最低 5 秒，超出预算的候选记 `skipped-budget`；失败继续下一个候选。
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
    - **回退**：所有候选都失败/被排除（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
@@ -78,8 +81,10 @@ dsh plugin --profile desktop add <本目录路径>
 
 会话自动恢复依赖 DSH Host 的 `sessionController` 服务（`ctx.sessionController.resolveAgent(sessionId)`）。
 插件**不把它声明为注入依赖**，而是运行时经 `ctx.reflect.get('sessionController')` 非阻塞探测；
-该服务静态依赖 agents 等 11 个服务，按依赖序晚于 `agents` 激活，探测扑空时在候选的预算切片内
-每 500ms 轮询等待服务就绪（0.5.2 起），切片耗尽才判该候选失败（error 区分"等待服务超时"）。
+该服务静态依赖 agents 等 11 个服务，按依赖序晚于 `agents` 激活。0.7.0 起，进入候选
+循环前先用独立预算 `serviceWaitTimeoutMs` 全局轮询等待服务就绪（间隔 500ms，超时记
+`service-wait-timeout` 后跳过全部候选直接回退）；候选阶段不再等服务——恢复候选前
+只做一次防御式即时检查，取不到即抛 `sessionController service unavailable`。
 服务缺失、无 `resolveAgent` 方法、调用抛错/超时/返回失败分支（如 `session/not-found`）时，
 记录原因到 `wake.log` 并尝试下一个候选；全部失败自动降级为旧行为——通知主会话。
 该探测绝不阻塞插件加载，也不影响既有通知路径。
@@ -197,7 +202,8 @@ profile 产物，需下次 DSH 重启重建后才在浏览器生效。
 | `persistThrottleMs` | `5000` | 活动时节流落盘间隔（窗口内合并为一次写盘） |
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
 | `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部 `running !== false` 候选，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
-| `restoreTimeoutMs` | `30000` | 恢复的总预算（ms），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
+| `restoreTimeoutMs` | `30000` | 候选恢复阶段的总预算（ms，0.7.0 起自 `sessionController` 就绪起算，等服务不占它），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
+| `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
 
 ## 开发 / 测试
