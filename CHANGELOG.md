@@ -1,5 +1,81 @@
 # Changelog
 
+## [0.8.0] - 2026-10-15
+
+### Added
+- **重启引擎（lib/restart.js，设计参考 dsh-power-button，独立实现）**：本插件从"只观测重启"
+  升级为"可以发起重启"。两种模式由 `resolveRestartMode` 判定：
+  - **helper（普通进程）**：真 `.cjs` detach helper（不用 `node -e`）经
+    **ARM → COMMIT → ACK** 三段握手接管拉起职责——host 等到 helper ARM 才写 COMMIT、
+    等到 ACK 才 unref 并安排自身退出；helper 等旧 pid 退出（时限由 host 退出预算
+    `preExitBudgetMs + 15s` 派生）、端口释放、会话记录静默（(size, mtime) 连续两次采样
+    一致；正则覆盖 `session.v4.jsonl[.zstd]`，power-button 的 `/session\.jsonl/` 会漏掉
+    v4 形态）后，以原 argv+cwd（`--port 0` 被 pin 成实际端口）拉起新进程，env 带
+    `DSH_ROR_RESTART_ID` 启动令牌，轮询 `/restart/health` 直到 `instanceId` 变更且
+    `restart.restartId` 匹配才算就绪（端口投机者冒充不了），最后自删
+  - **pid1-exit（容器内 PID=1，本插件的现实部署形态）**：PID 1 退出即容器销毁、PID
+    namespace 内所有进程（含 detach helper）被内核杀死，helper 方案在结构上不可能工作。
+    该模式改为"退出前把全部持久化记录写齐 → 优雅退出 → 交由容器重启策略拉起"：host 依次
+    写 origin status（`~/.dsh/power-restart/ror-<restartId>.status.json`，带 `committedAt`）、
+    重启身份记录（`<stateDir>/restart-identity.json`，带 `requestedAt` 时效窗口
+    `IDENTITY_TTL_MS=15min` 防陈旧认领）、检测 marker 兜底 flush、停机归因存根
+    （合成 `signal: 'restart-exit'`），然后 `ctx.get('appExit')` 优雅退出（缺失时自发
+    SIGTERM 走既有优雅路径，unref 看门狗兜底 `process.exit(pid1ExitCode)`）。容器需以
+    `--restart=always/unless-stopped`（或 `on-failure` 配合非 0 退出码）运行才能自动拉起
+  - **退出前的持久化兜底（两模式共用）**：取消节流定时器同步固化检测 marker
+    （`recentSessions`/running 标记是恢复流程的唯一数据源）+ 写停机归因存根；恢复流程本身
+    零改动，重启后照常走"boot 记录 → 自动恢复运行中的会话 → fallback 通知主会话"
+- **设置弹窗左侧「重启」选项（第二个 `settings.section` 条目，order 62）**：显示模式说明
+  （PID=1 时提前告知依赖容器重启策略）、优雅退出通道可用性（appExit missing 警示）与
+  「重启后将自动恢复 N 个运行中的会话」（`GET /restart/info`，与顶栏开关同口径）；
+  「重启 DSH」按钮先弹**二次确认**模态框（默认焦点「取消」，Esc/点遮罩取消，必须显式点
+  「确认重启」），确认后先捕获基线 `instanceId` 再 `POST /restart`，随后单飞轮询
+  `/restart/health`：`instanceId` 相对基线变更（或无基线时"见过挂掉 + 重新起来"）才刷新
+  页面，短暂断线绝不当成功；pid1-exit 模式超时提示容器策略可能未拉起（需手动
+  `docker start`），降频（5s）继续等待
+- **重启回执 toast**：页面加载时查 `/restart/health`，`restarted` 标记为真（本进程确为一次
+  重启的产物且未被确认）弹「已重启：……正在自动恢复」顶部通知并 `POST /restart/ack` 消费
+  （只清 toast 标记，`restart` 身份块保留整个进程生命周期；身份记录由启动时
+  `matchRestartIdentity` 消费——v2 令牌匹配（helper）或时效窗口（pid1）才认领，手动启动
+  不能冒领）
+- **`/restart` 命令与 `restart_harness` 模型工具（对齐 dsh-power-button 的入口集合）**：
+  与按钮共用同一个 at-most-once 闩（第二个并发触发得 409，绝不双 helper/双退出）；
+  因果会话取发起者（origin.kind = `settings-ui` / `command` / `model-tool`），重启日志据此
+  标注来源；名称已被其他插件注册时记日志让位，不影响本插件其余能力；模型工具 `delayMs`
+  下限 1000ms（模型不能在自身 turn 结算前杀进程）、上限 `maxDelayMs`
+- **origin 归因零改动复用**：helper 握手 status 写到 `~/.dsh/power-restart/` 目录（文件名
+  `ror-` 前缀与 power-button 区分），`committedAt` 落在 [上次启动, 本次启动] 窗口内即被
+  既有 `pickOriginRecord` 扫描命中；boot 记录 reason 新增 **`restart-button`** 标签
+  （`origin.source === 'dsh-resume-on-restart'`，其余 origin 仍是 `power-button`），重启日志
+  UI 补徽标配色与 zh/en 文案；启动时顺带 7 天 housekeeping 清理本插件工件（helper 脚本/
+  日志、`ror-*.commit.json`、`ror-*.status.json`），不碰 power-button 的记录
+- **新路由**（均在本插件既有前缀与围栏之下，`enableRestart: false` 时整体不存在）：
+  `GET /api/dsh-resume-on-restart/restart/info`（模式/候选数/appExit 状态）、
+  `GET /restart/health`（instanceId + 重启身份 + lifecycle，helper 就绪门控与客户端轮询
+  共用）、`POST /restart`（防重入闩）、`POST /restart/ack`
+- **新配置**：`enableRestart`（默认 `true`，按钮/命令/路由总开关）、`enableModelTool`
+  （默认 `true`）、`restartDelayMs`（默认 `1500`）、`maxDelayMs`（默认 `5000`）、
+  `pid1ExitCode`（默认 `0`；`--restart=on-failure` 部署设非 0）
+- **新测试**：lib/restart.test.js（模式判定、端口 pin、预算派生、身份认领 7 分支、防重入
+  闩、delay 夹取、helper 脚本产物协议点断言、**helper 真实进程端到端**——COMMIT 前不出手/
+  COMMIT 后先写身份再拉起/假目标以 health-timeout 收场而非假成功）；detect.test.js 追加
+  `shutdownReasonOf` 的 restart-button 用例；tools/smoke.mjs 手动冒烟（mock ctx 启动插件 +
+  GET 路由 + pid1-exit 分支 stub appExit 端到端，`DSH_HOME` 重定向隔离）
+
+### Security
+- `POST /restart` 是破坏性操作，走本插件既有最小围栏（宿主 `connection.requestRejection`
+  优先，缺失时回退复刻自 DSH 官方规则的 Host/Origin/sec-fetch-site 判断）+ 防重入闩；
+  二次确认在客户端强制（默认焦点「取消」）。helper 脚本内嵌 relaunch argv，写盘 `0600`
+  且握手失败即删；status/身份/commit 记录原子写（temp+rename）`0600`；启动令牌读后即删，
+  不泄漏给子进程
+
+### Changed
+- 检测 marker.json **绝不被重启流程覆写**（power-button 的 helper 会覆写它自己的 marker；
+  本插件的身份记录独立存 `restart-identity.json`，`recentSessions` 数据源不受影响）
+- `POST /restart` 成功回包语义：helper 模式 = 握手三段全部完成、helper 已接手；pid1-exit
+  模式 = 记录已写齐、进程即将优雅退出。此后的 helper 失败（如 health-timeout）只能靠
+  页面轮询超时暴露，与 power-button 一致
+
 ## [0.7.0] - 2026-10-14
 
 ### Fixed

@@ -2,7 +2,9 @@
 
 DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话**（把"重启前正在干活的会话"
 恢复成 live agent 并投递通知，让它自己继续），失败时降级为向主 agent 投递一条**信息性消息**
-（含中断时长、上次活跃会话等状态摘要），由 agent 自主决定下一步。
+（含中断时长、上次活跃会话等状态摘要），由 agent 自主决定下一步。0.8.0 起还内置**重启引擎**：
+可在设置弹窗（二次确认）主动重启 DSH，普通进程 helper 握手原样拉起，容器 PID=1 优雅退出
+交由容器重启策略拉起——重启完成后会话照常自动恢复。
 
 解决"DSH 重启后会话中断、工作丢失"的问题——重启后无需用户去别的会话手动输入"继续"。
 
@@ -11,6 +13,14 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
 - ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量）：重启后自动把重启前停止时仍运行中的**全部**活跃会话
    resume 成 live agent 并投递通知；依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- 🖥️ **设置弹窗「重启」选项**（0.8.0）：设置弹窗左侧新增「重启」入口，展示重启模式说明、
+   优雅退出通道可用性与「重启后将自动恢复 N 个运行中的会话」；「重启 DSH」按钮**二次确认**
+   （默认焦点「取消」的确认弹窗）后才执行，重启期间轮询新实例、就绪后页面自动刷新，
+   回到页面时弹「已重启」回执 toast
+- 🔌 **重启引擎**（0.8.0，设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)）：
+   普通进程走 detach helper 的 ARM→COMMIT→ACK 握手原样拉起；**容器 PID=1 走"优雅退出 +
+   容器重启策略拉起"**（见下文专节）。同一引擎同时供 `/restart` 命令与 `restart_harness`
+   模型工具使用（名称冲突自动让位），防重入闩保证并发触发只生效一次
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/skipped-budget），
   上限 200 条、损坏行跳过；wake.log 保留不动
@@ -178,6 +188,118 @@ web 设置弹窗新增「重启日志」section（slot `settings.section`，写�
 （entries 为全部条目，时间正序，客户端自行倒序；围栏与 `/state` 相同）。客户端 bundle 属
 profile 产物，需下次 DSH 重启重建后才在浏览器生效。
 
+0.8.0 起原因标签新增 **`restart-button`**（重启由本插件的按钮/命令/模型工具发起，
+`origin.source === 'dsh-resume-on-restart'`）；其余 origin（如 dsh-power-button 发起的）
+仍是 `power-button`，无 origin 时照旧按停机归因给 `signal` / `crash`。
+
+## 设置弹窗「重启」选项与重启引擎（0.8.0）
+
+设置弹窗左侧在「重启日志」之后新增「重启」入口（第二个 `settings.section` 条目，
+order 62），包含三块信息与一个按钮：
+
+- **模式说明**：普通进程显示常规说明；检测到容器 PID=1（`resolveRestartMode()`）时
+  额外提示"重启 = 优雅退出，由容器重启策略拉起；未配置策略需手动 docker start"
+- **通道检查**：宿主 `appExit` 通道缺失时显示警示（重启将退化为直接退出）
+- **恢复预告**：「重启后将自动恢复 N 个运行中的会话」（`GET /restart/info` 的
+  `runningCandidates`，与顶栏开关同一候选口径——被顶栏排除的会话不计入恢复，
+  但仍计入此处显示的运行中候选数）
+- **「重启 DSH」按钮**：点击先弹**二次确认**模态框——默认焦点在「取消」上，Esc 与
+  点击遮罩都只是取消，唯一前进路径是显式点「确认重启」；确认后才 `POST /restart`
+
+确认后的流程（客户端）：
+
+1. 先捕获当前 `/restart/health` 的 `instanceId` 作为**基线**（不用页面加载时的旧值：
+   服务可能早已被手动重启过，陈旧基线会把"早就换了实例"误判成本次重启成功）
+2. `POST /restart`（失败直接显示错误并回到按钮态）
+3. 单飞轮询 `/restart/health`（1.5s × 90 次，随后降为 5s 持续等待）：`instanceId`
+   相对基线**变更**（或无基线时"见过挂掉 + 重新起来"）才刷新页面——短暂断线、
+   单次网络抖动绝不会被当成重启成功
+4. pid1-exit 模式超过快速窗口后提示"容器可能未配置重启策略，请手动 docker start"，
+   本页继续降频等待；回到页面后若 `/restart/health` 报告 `restarted` 标记（本进程确为
+   一次重启的产物且未被确认），顶部弹「已重启：……正在自动恢复」toast 并
+   `POST /restart/ack` 消费，之后的刷新不再重弹
+
+### 重启引擎的两种模式（lib/restart.js）
+
+设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)（MIT，
+"detached helper relaunch"思想致谢），实现为本插件独立改写。`resolveRestartMode()`
+按 `process.pid === 1` 分流：
+
+**helper 模式（普通进程）**——与 power-button 同构的三段握手：
+
+```
+点击/命令/工具 → POST /restart（防重入闩，二次确认在客户端）
+[host]    写 helper .cjs（内嵌 relaunch argv，0600）→ spawn（detached）
+[helper]  ARM   → ror-<restartId>.status.json { stage:'armed' }
+[host]    等 ARMED（5s）→ 写 COMMIT 文件（本 restartId）
+[helper]  ACK   → status { stage:'committed', committedAt }
+[host]    等 ACK → unref → 固化检测 marker + 停机存根 → 有界 flush → 延迟退出
+          （ctx.get('appExit') 优雅树销毁优先，缺失自发 SIGTERM，看门狗兜底）
+[helper]  等旧 pid 退出（时限 = host 退出预算 + 15s 派生，绝不先于 host 放弃）
+          → 等端口释放 → 等会话记录静默（(size,mtime) 两次采样一致，覆盖
+            session.v4.jsonl[.zstd]）→ 写重启身份记录 → spawn 新进程
+            （原 argv+cwd，--port 0 被 pin 成实际端口；env 带 DSH_ROR_RESTART_ID）
+          → 轮询 /restart/health 直到 instanceId 变更且 restartId 匹配 → 自删
+[client]  轮询 → instanceId 变更 → 刷新 → toast → ack
+```
+
+任何握手失败都让旧进程继续活着并如实报错——"退出了却没人拉起"是 UI 唯一无法
+恢复的结局；helper 拉起后的失败（如 health-timeout）由页面轮询超时暴露。
+
+**pid1-exit 模式（容器内 PID=1）**——见下一节。
+
+### Docker PID=1 的重启方案
+
+本插件的目标部署（DSH 容器）正是 **PID=1 跑 DSH**：`ps -p 1` 即
+`node /usr/local/bin/dsh --profile web --port 3080`。这与普通进程有本质差异：
+
+- **内核语义**：PID namespace 的 init（PID 1）退出时，内核杀死该 namespace 内
+  **所有**进程——detach 的 helper 也活不下来。power-button 式"helper 接管拉起"在
+  PID=1 下**结构上不可能工作**：旧进程退出 → helper 被杀 → 无人拉起 → 服务死亡。
+- **方案**：重启 = **优雅退出 + 交给容器运行时拉起**。host 在退出前把全部持久化
+  记录写齐，然后请求退出：
+
+  1. origin status（`~/.dsh/power-restart/ror-<restartId>.status.json`，带
+     `committedAt`）→ 下次启动的 origin 扫描零改动命中，重启日志标注
+     `restart-button` + 来源
+  2. 重启身份记录（`<stateDir>/restart-identity.json`，带 `requestedAt`）→ 新实例
+     凭 15 分钟时效窗口认领"我是重启产物"（无 env 令牌可继承，窗口防陈旧冒领），
+     `/restart/health` 据此报 `restart` 身份与 `restarted` toast 标记
+  3. 检测 marker 兜底 flush（固化 `recentSessions`/running 标记）→ 重启后照常自动
+     恢复会话
+  4. 停机归因存根（合成 `signal: 'restart-exit'`，与 crash 区分）
+  5. `ctx.get('appExit')(pid1ExitCode)` 优雅退出（树销毁、存储 flush、端口释放）；
+     宿主未提供通道时自发 SIGTERM 走既有优雅路径；unref 看门狗兜底硬退出
+
+- **容器侧要求**：容器须以 `--restart=always` / `unless-stopped` 运行（退出后由
+  Docker 自动拉起），或 `--restart=on-failure` 配合 `pid1ExitCode` 设为非 0；
+  两者都没有时重启=停机，需手动 `docker start <容器>`，页面会明确提示这一点。
+- **检测不受影响**：新实例启动后 `pid` 仍为 1，重启判定走既有的 `startAt` 偏差
+  逻辑（>2s 容差即判定重启），停机时长、恢复候选、boot 记录全部照旧。
+
+### 入口与防重入
+
+三个入口共用同一引擎与同一个 at-most-once 闩（第二个并发触发得 `409`，绝不出现
+双 helper 或双重退出）：
+
+| 入口 | origin.kind | 二次确认 | 说明 |
+|---|---|---|---|
+| 设置弹窗「重启」按钮 | `settings-ui` | ✅ 客户端确认弹窗 | 无因果会话，重启日志只记来源类型 |
+| `/restart` 命令 | `command` | ❌（可恢复操作） | 因果会话取发起命令的 agent |
+| `restart_harness` 模型工具 | `model-tool` | ❌ | `delayMs` 下限 1000ms（模型不能在自身 turn 结算前杀进程）、上限 `maxDelayMs`；名称与 dsh-power-button / anweat/dsh-restart 一致，先到先得，被占用即让位 |
+
+### 新路由（本插件前缀 + 既有围栏，`enableRestart: false` 时整体不存在）
+
+- `GET /api/dsh-resume-on-restart/restart/info` → `{ ok, mode, pid, instanceId,
+  appExit, isContainer, restartDelayMs, pid1ExitCode, runningCandidates }`
+- `GET /api/dsh-resume-on-restart/restart/health` → `{ ok, instanceId, pid, mode,
+  lifecycle, appExit[, restart: { restartId, fromInstanceId }][, restarted] }`
+  （helper 就绪门控与客户端轮询共用；`restart` 身份块保留整个进程生命周期，
+  `restarted` toast 标记被 `/restart/ack` 消费）
+- `POST /api/dsh-resume-on-restart/restart` → `{ ok, mode, restartId, note }`（409 =
+  已有重启进行中）
+- `POST /api/dsh-resume-on-restart/restart/ack` → 消费 toast 标记
+
 ## Docker / PID 1 容器支持
 
 在 Docker 容器里 DSH 服务永远以 PID 1 运行，`pid` 无法区分两次运行（旧版因此检测不到容器内重启）。0.2.0 起的检测方式：
@@ -186,6 +308,9 @@ profile 产物，需下次 DSH 重启重建后才在浏览器生效。
 - `pid` 不同 → 直接判定重启（行为不变）
 - `pid` 相同（容器场景）→ 对比本次进程启动时间与 marker 里的 `startAt`，无论时钟前移还是后移，偏差超过 2 秒容差（`START_AT_TOLERANCE_MS = 2000`）都判定重启
 - 旧版 marker（没有 `startAt` 字段）自动兼容：回退用 `lastBootAt` 作为上次启动时间参与对比，不丢弃 marker
+
+0.8.0 起插件自身也能在 PID=1 下**发起**重启（优雅退出 + 容器重启策略拉起，详见上一节
+「Docker PID=1 的重启方案」）。
 
 ## 配置（cordis.patch.yml）
 
@@ -205,20 +330,35 @@ profile 产物，需下次 DSH 重启重建后才在浏览器生效。
 | `restoreTimeoutMs` | `30000` | 候选恢复阶段的总预算（ms，0.7.0 起自 `sessionController` 就绪起算，等服务不占它），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
 | `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
+| `enableRestart` | `true` | 0.8.0：重启引擎总开关（设置弹窗「重启」按钮、`/restart` 命令、`/restart/*` 路由）。`false` 时全部不存在，插件回到纯观测 |
+| `enableModelTool` | `true` | 0.8.0：是否注册 `restart_harness` 模型工具。设 `false` 则重启只走 GUI 按钮/命令；名称被其他插件占用时无论如何都会自动让位 |
+| `restartDelayMs` | `1500` | 0.8.0：HTTP 回包返回后、请求退出前的延迟（ms），给回包与会话 flush 留时间 |
+| `maxDelayMs` | `5000` | 0.8.0：模型工具 `delayMs` 参数的上限（有效下限 1000ms） |
+| `pid1ExitCode` | `0` | 0.8.0：pid1-exit 模式的退出码。`--restart=on-failure` 策略只在非 0 退出时拉起容器；`always` / `unless-stopped` 保持默认 0 即可。取值 0-255，非法回退默认 |
 
 ## 开发 / 测试
 
 ```bash
-# 运行单元测试（重启判定、停机归因、origin 匹配、ndjson 裁剪、排除过滤、消息构建）
+# 运行单元测试（重启判定、停机归因、origin 匹配、ndjson 裁剪、排除过滤、消息构建、
+# 0.8.0 的重启引擎：模式判定/端口 pin/身份认领/helper 产物协议点/真实进程端到端）
 npm test
 ```
 
 测试覆盖 `lib/detect.js` 中的纯函数（重启判定与检测依据、恢复候选挑选与排除过滤、
 停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建、0.6.0 的
-human-prompt 守卫判定）与 `lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
-JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描），
-不依赖 DSH 运行时。
+human-prompt 守卫判定）、`lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
+JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描）与
+`lib/restart.js` 中的重启引擎（模式判定、端口 pin、退出预算派生、身份认领、防重入闩、
+helper 脚本产物的关键协议点断言，以及一个**真实进程端到端**：helper 面对 COMMIT 前
+不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功），
+不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
+GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
+`~/.dsh`）。
 
 ## License
 
-MIT
+MIT。0.8.0 重启引擎的"detached helper relaunch"设计参考
+[dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)（MIT）与
+[anweat/dsh-restart](https://github.com/anweat/dsh-restart)（MIT），实现为本插件独立改写
+（身份记录独立于检测 marker、容器 PID=1 的 pid1-exit 模式、会话静默检测覆盖
+session.v4.jsonl[.zstd]），未复制其代码。

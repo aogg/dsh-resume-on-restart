@@ -18,3 +18,10 @@
         restoreTimeoutMs: 30000
         serviceWaitTimeoutMs: 30000
         requireHumanPrompt: true
+        # ---- 0.8.0：重启引擎（设置弹窗「重启」按钮 + /restart 命令 + restart_harness 工具） ----
+        enableRestart: true
+        enableModelTool: true
+        restartDelayMs: 1500
+        maxDelayMs: 5000
+        # 容器 PID=1 模式的退出码：--restart=on-failure 策略需非 0 才会拉起
+        pid1ExitCode: 0
