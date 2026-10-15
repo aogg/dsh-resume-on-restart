@@ -32,7 +32,7 @@
     }
   },
   "scripts": {
-    "test": "node --test lib/detect.test.js lib/session-scan.test.js lib/restart.test.js lib/archive.test.js"
+    "test": "node --test lib/detect.test.js lib/session-scan.test.js lib/restart.test.js lib/archive.test.js lib/apply.test.js"
   },
   "engines": {
     "node": ">=18"
