@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.9.0] - 2026-10-15
+
+### Added
+- **恢复候选过滤已归档会话（归档不恢复）**：权威归档名单在宿主
+  `ctx.workspaceRegistry.archivedSessionIds`（持久化在 workspace spec，跨重启保留）；
+  归档是用户主动行为，unarchive 之前会话不可能正常干活（DSH 的 `ArchivedSessionGate`
+  也会拒绝归档会话及其 subagent 后代跑模型步骤），本插件在更早的恢复候选阶段拦截：
+  - **候选阶段剔除**：恢复流程在用户排除过滤之后、human-prompt 守卫与
+    agents.get/resumeSession 之前，防式探测 `workspaceRegistry`（`ctx.reflect.get`
+    非阻塞，不注入、不阻塞加载）读归档名单，归档会话从候选中剔除；能拿到
+    session store（`ctx.reflect.get('sessions')`）时按 gate 同样的 lineage 规则把
+    "归档会话的 subagent 后代"一并剔除——沿 session.header 的 `origin==='subagent'`
+    + `parentSession` 向上走，任一祖先在名单里即剔除（fork 出的会话是独立会话
+    不继承；祖先不在 store 时直接查该祖先 id 后终止，与 gate 同款）；拿不到
+    store 就只查直系名单。过滤纯函数在 lib/detect.js：`normalizeArchivedSessionIds` /
+    `sessionUnderArchivedLineage` / `filterArchivedCandidates`
+  - **重启日志新结算结果 `archived`**：被剔除的候选与既有"用户排除"同口径结算
+    （wake.log + 重启日志 `result: 'archived'`、error `session is archived`），与
+    resumed/failed/excluded/skipped-budget/skipped-no-human-prompt 并列，**不算失败**；
+    lib/client.js 设置弹窗重启日志补 zh「已归档」/en「archived」文案与紫调徽标配色
+  - **回退语义**：候选全被归档剔除（无可恢复候选）时不触发 fallbackWake 降级
+    通知——全是归档会话 = 用户有意归档，重启后保持安静，不吵主会话；可恢复候选
+    失败、全部用户排除、无任何候选等其余情况回退行为完全不变（决策收口到新纯函数
+    `classifyRestoreFallback`，脏输入保守回退）
+  - **`GET /restart/info` 同口径**：设置弹窗「重启后将自动恢复 N 个运行中的会话」的
+    `runningCandidates` 与恢复流程走同一过滤（含 subagent 后代），拿不到
+    workspaceRegistry 时维持现口径
+  - **防御退化**：workspaceRegistry 缺失/形状异常 → 不过滤（行为完全退化为现状）；
+    session store 缺失 → 只查直系名单；单个会话 header 读取失败只影响它自己的
+    lineage 判定，不阻断整个过滤
+
+### Tests
+- 新增 lib/archive.test.js（node --test，无 e2e、不起服务）：纯函数层（名单归一化、
+  gate 同款 lineage 判定——自身/直系/多级祖先/缺失父会话/fork 不继承/防环/非法
+  输入、候选过滤含"空名单零 lookup"与"store 缺失只查直系"、classifyRestoreFallback
+  分支）与宿主接线层（mock cordis ctx：`/restart/info` 计数口径、候选全归档的安静
+  收尾 + archived 结算、workspaceRegistry 缺失时行为完全不变；`DSH_HOME` 重定向
+  临时目录，绝不触碰真实 `~/.dsh`）
+
 ## [0.8.0] - 2026-10-15
 
 ### Added

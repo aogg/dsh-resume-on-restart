@@ -21,9 +21,13 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    普通进程走 detach helper 的 ARM→COMMIT→ACK 握手原样拉起；**容器 PID=1 走"优雅退出 +
    容器重启策略拉起"**（见下文专节）。同一引擎同时供 `/restart` 命令与 `restart_harness`
    模型工具使用（名称冲突自动让位），防重入闩保证并发触发只生效一次
+- 🗄️ **归档会话不恢复**（0.9.0）：恢复候选按权威名单 `workspaceRegistry.archivedSessionIds`
+   自动剔除已归档会话，并按 DSH `ArchivedSessionGate` 同样的 lineage 规则剔除"归档会话的
+   subagent 后代"；剔除在重启日志结算为 `archived`（不算失败），候选全是归档时保持安静、
+   不回退吵主会话；`GET /restart/info` 的候选数同口径；registry 缺失时行为退化为现状
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
-  重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/skipped-budget），
-  上限 200 条、损坏行跳过；wake.log 保留不动
+  重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
+  /skipped-no-human-prompt），上限 200 条、损坏行跳过；wake.log 保留不动
 - ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
   倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
 - 🖱️ **会话顶栏开关**（0.4.0）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
@@ -202,7 +206,8 @@ order 62），包含三块信息与一个按钮：
 - **通道检查**：宿主 `appExit` 通道缺失时显示警示（重启将退化为直接退出）
 - **恢复预告**：「重启后将自动恢复 N 个运行中的会话」（`GET /restart/info` 的
   `runningCandidates`，与顶栏开关同一候选口径——被顶栏排除的会话不计入恢复，
-  但仍计入此处显示的运行中候选数）
+  但仍计入此处显示的运行中候选数；0.9.0 起该计数同口径剔除已归档会话及其
+  subagent 后代，拿不到 `workspaceRegistry` 时维持现口径）
 - **「重启 DSH」按钮**：点击先弹**二次确认**模态框——默认焦点在「取消」上，Esc 与
   点击遮罩都只是取消，唯一前进路径是显式点「确认重启」；确认后才 `POST /restart`
 
@@ -340,17 +345,21 @@ order 62），包含三块信息与一个按钮：
 
 ```bash
 # 运行单元测试（重启判定、停机归因、origin 匹配、ndjson 裁剪、排除过滤、消息构建、
-# 0.8.0 的重启引擎：模式判定/端口 pin/身份认领/helper 产物协议点/真实进程端到端）
+# 0.8.0 的重启引擎：模式判定/端口 pin/身份认领/helper 产物协议点/真实进程端到端、
+# 0.9.0 的归档会话过滤：gate 同款 lineage/候选剔除/回退决策/restart/info 计数口径）
 npm test
 ```
 
 测试覆盖 `lib/detect.js` 中的纯函数（重启判定与检测依据、恢复候选挑选与排除过滤、
 停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建、0.6.0 的
-human-prompt 守卫判定）、`lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
-JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描）与
+human-prompt 守卫判定、0.9.0 的归档名单归一化/lineage 判定/候选过滤/回退决策）、
+`lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
+JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描）、
 `lib/restart.js` 中的重启引擎（模式判定、端口 pin、退出预算派生、身份认领、防重入闩、
 helper 脚本产物的关键协议点断言，以及一个**真实进程端到端**：helper 面对 COMMIT 前
-不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功），
+不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功）与
+`lib/archive.test.js` 的归档过滤接线（mock cordis ctx：`/restart/info` 计数口径、
+候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；无 e2e、不起服务），
 不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。

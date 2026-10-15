@@ -1,7 +1,7 @@
 {
   "name": "dsh-resume-on-restart",
-  "version": "0.8.0",
-  "description": "DSH 插件：检测 DSH 服务重启后自动恢复重启前活跃的全部会话（依赖 Host sessionController，缺失时降级为通知主会话），让中断的工作自动继续。带重启日志（restarts.ndjson，设置弹窗只读展示）、web 会话顶栏开关（按会话排除自动恢复）与重启引擎（设置弹窗「重启」按钮二次确认 + /restart 命令 + restart_harness 模型工具；helper 握手拉起，容器 PID=1 走优雅退出交由容器重启策略）。仅依赖 cordis ctx 服务，兼容 DSH Desktop 打包环境。",
+  "version": "0.9.0",
+  "description": "DSH 插件：检测 DSH 服务重启后自动恢复重启前活跃的全部会话（依赖 Host sessionController，缺失时降级为通知主会话），让中断的工作自动继续。带重启日志（restarts.ndjson，设置弹窗只读展示）、web 会话顶栏开关（按会话排除自动恢复）、重启引擎（设置弹窗「重启」按钮二次确认 + /restart 命令 + restart_harness 模型工具；helper 握手拉起，容器 PID=1 走优雅退出交由容器重启策略）与归档会话过滤（已归档会话及其 subagent 后代不恢复、不回退吵主会话）。仅依赖 cordis ctx 服务，兼容 DSH Desktop 打包环境。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -32,7 +32,7 @@
     }
   },
   "scripts": {
-    "test": "node --test lib/detect.test.js lib/session-scan.test.js lib/restart.test.js"
+    "test": "node --test lib/detect.test.js lib/session-scan.test.js lib/restart.test.js lib/archive.test.js"
   },
   "engines": {
     "node": ">=18"
