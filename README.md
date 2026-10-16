@@ -11,8 +11,12 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量）：重启后自动把重启前停止时仍运行中的**全部**活跃会话
-   resume 成 live agent 并投递通知；依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话
+- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量，0.9.1 收口）：重启后自动把重启前停止时仍运行中的**全部**活跃会话
+   resume 成 live agent 并投递通知（0.9.1 起逐个尝试全部候选，不再"首个成功即停"）；
+   subagent routing 持有的子代理会话按其**主会话祖先代理恢复**（`result: 'subagent'`，不算失败）；
+   依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话，
+   开机无任何 live agent 时（0.9.1）升级经 sessionController 恢复最近活跃会话投递，
+   不再 `no target agent after wait`
 - 🖥️ **设置弹窗「重启」选项**（0.8.0）：设置弹窗左侧新增「重启」入口，展示重启模式说明、
    优雅退出通道可用性与「重启后将自动恢复 N 个运行中的会话」；「重启 DSH」按钮**二次确认**
    （默认焦点「取消」的确认弹窗）后才执行，重启期间轮询新实例、就绪后页面自动刷新，
@@ -75,6 +79,17 @@ dsh plugin --profile desktop add <本目录路径>
      等服务，总预算 `restoreTimeoutMs`（默认 30 秒）自服务就绪起算、按候选数平摊、
      每候选最低 5 秒，超出预算的候选记 `skipped-budget`；失败继续下一个候选。
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
+     **每个候选都会被尝试**（0.9.1：不再在第一个候选投递成功后提前结束——那会让
+     其余运行中会话既不恢复也无任何日志，0.5.0 全量恢复语义名存实亡）。
+   - **subagent 会话代理恢复**（0.9.1）：`header.origin === 'subagent'` 的候选被
+     subagent routing 持有，宿主 `resolveAgent` 一律拒绝（`is owned by subagent
+     routing`，正确通道是经父会话/subagent delivery），直接恢复必然失败。候选阶段
+     用 session store header（防御式探测，同归档过滤口径）识别这类候选，结算为
+     `result: 'subagent'`（**不算失败**），并把其**最近的主会话祖先**（沿
+     `parentSession` 上溯）作为代理恢复目标并入候选——用户的工作经 lead 会话继续；
+     祖先被用户排除/已归档时不代理（尊重用户意图，安静结算）。session store 缺失
+     时无法预识别（退化 = 现状），由 `resolveAgent` 的 RemoteError 在恢复循环里
+     兜底结算为 `result: 'subagent'`（绝不记 failed）。
    - **回退**：所有候选都失败/被排除（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
      ```
@@ -84,6 +99,13 @@ dsh plugin --profile desktop add <本目录路径>
      重启前最近活跃的会话：<session-id>
      如需继续之前的工作，或启动新任务，请自主决定下一步。
      ```
+     轮询落空时的**可靠降级**（0.9.1）：宿主 `agents.roots()` 只返回"已 live"的顶层
+     agent，开机若没有任何会话被恢复/打开，轮询必然落空（历史 `wake.log` 多条
+     `no target agent after wait`——降级通知从此没有出口）。落空后升级：等
+     `sessionController` 就绪（`serviceWaitTimeoutMs` 预算），把 `lastSessionId`
+     （重启前最近活跃会话；subagent 会话先上溯主会话祖先）解析成 live agent 再投递
+     ——与恢复候选同一恢复通道；尊重用户排除、归档与 human-prompt 守卫（fail-closed），
+     每一步 `wake.log` 留痕。
    - 每次投递/恢复结果都追加记录到 `wake.log`（一行一条 JSON：`deliveredTo` / `ok` / `error`）
 
 运行期间通过 `agent/status`、`agent/inbox/inserted`、`agent/assistant-stream` 事件（payload 均含 `agent`，
@@ -177,7 +199,10 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
   （`{ source, restartId, kind, sessionId, requestedAt }` 或 `null`）/ `runningSessions`
   （本次参与恢复的候选列表）
 - **restore 记录**（恢复流程每结算一个候选写一条）：
-  `{ type, bootAt, id, result: resumed|failed|excluded|skipped-budget, error, at }`
+  `{ type, bootAt, id, result, error, at }`，`result` ∈ `resumed` | `failed` |
+  `excluded`（用户排除）| `skipped-budget`（预算耗尽）| `skipped-no-human-prompt`
+  （0.6.0 守卫拦截）| `archived`（0.9.0 归档剔除）| `subagent`（0.9.1 subagent
+  routing 持有，经主会话祖先代理恢复）；除 `failed` 外都不算失败
 
 原因标签口径：`power-button`（有 origin，重启由 power-restart 流程发起）/ `signal`
 （有 pending-shutdown 存根或旧 marker `when`、无 origin，即 SIGTERM/SIGINT 正常停机）/

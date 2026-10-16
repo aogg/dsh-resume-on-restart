@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.9.1] - 2026-10-16
+
+### Fixed
+- **全量恢复不再"首个成功即停"**：`restoreCandidates` 此前在第一个候选投递成功后
+  直接 `return`，其余运行中会话既不恢复也没有任何日志（10-14 05:48 boot 4 个候选
+  只有 3 条 restore 记录，第 4 个候选凭空消失；与 README 0.5.0 起的"全量恢复"语义
+  直接矛盾）。现改为逐个尝试全部候选、汇总 restored；预算耗尽的候选照旧记
+  `skipped-budget`（可见，而非无声消失）
+- **subagent routing 持有的候选不再记 failed**：宿主 `sessionController.resolveAgent`
+  对 `header.origin === 'subagent'` 的会话一律拒绝（稳定 RemoteError 文案
+  `session "x" is owned by subagent routing`，正确通道是经父会话/subagent delivery；
+  10-13 09:30 与 10-14 05:48 两次 boot 各有一个候选因此失败）。候选阶段用 session
+  store header（防御式探测，与归档过滤同口径）识别这类候选：
+  - 结算为 **`result: 'subagent'`**（与 archived/excluded 并列，**不算失败**），
+    error 注明处置方式（代理祖先 / 被候选覆盖 / 祖先被排除 / 祖先归档 / 无祖先）
+  - **经主会话祖先代理恢复**：沿 `parentSession` 上溯到最近的主会话祖先，作为代理
+    恢复目标并入候选（去重、按活跃时间新 → 旧），用户的工作经 lead 会话继续；
+    祖先被用户排除或已归档时不代理（尊重用户意图，安静结算）
+  - session store 缺失 → 无法预识别（退化 = 现状），恢复循环里对 RemoteError 文案
+    兜底识别，同样结算 `result: 'subagent'`（绝不记 failed）
+  - `GET /restart/info` 的 `runningCandidates`（设置弹窗「重启后将自动恢复 N 个」）
+    同口径剔除 subagent 会话（store 缺失时维持现口径）
+  - 纯函数在 lib/detect.js：`isSubagentSessionHeader` / `mainAncestorSessionId` /
+    `partitionSubagentCandidates`；lib/client.js 补 zh「子代理会话」/en `subagent`
+    文案与青调徽标
+- **fallbackWake 不再 `no target agent after wait`**：宿主 `agents.roots()` 只返回
+  "已 live"的顶层 agent（`AgentRegistry.roots`），开机若没有任何会话被恢复/打开，
+  20 秒轮询必然落空，降级通知从此没有出口（10-10 至 10-15 历史 wake.log 至少 7 条
+  该错误）。落空后升级：等 `sessionController` 就绪（`serviceWaitTimeoutMs` 预算），
+  把 `lastSessionId`（重启前最近活跃会话；subagent 会话先沿 `parentSession` 上溯
+  主会话祖先）经 `resolveAgent` 解析成 live agent 再投递——与恢复候选同一恢复通道；
+  尊重用户排除、归档（lineage 口径）与 human-prompt 守卫（fail-closed），每一步
+  `wake.log` 留痕。human-prompt 守卫从 fallbackWake 局部提升到作用域级，轮询与
+  升级路径共用同一 blocked 记忆
+- **`resumeSession` 预算边角**：候选阶段 deadline 未设（`deadline === 0`，如 fallback
+  升级路径）时旧实现 `max(1, remainingMs())` 会退化为 1ms 即超时；现以
+  `budgetMs`/`restoreTimeoutMs` 为准；升级路径显式 `ignoreStageDeadline`，不继承
+  候选阶段已耗尽的预算
+
+### Notes
+- 等待预算复核（0.7.0 的 `serviceWaitTimeoutMs` 独立预算 + 9b2bd2a 轮询等待）：
+  10-16 00:53 boot 实测 sessionController 13.7s 就绪、独立预算下恢复成功；候选阶段
+  总预算（`restoreTimeoutMs` 30s、按候选数平摊、每候选最低 5s）在"逐个尝试全部候选"
+  后可能对尾部候选记 `skipped-budget`，属可见的预期行为（需要时调大 `restoreTimeoutMs`）
+
 ## [0.9.0] - 2026-10-15
 
 ### Added
