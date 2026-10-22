@@ -11,14 +11,16 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量，0.9.1 收口）：重启后自动把重启前停止时仍运行中的**全部**活跃会话
-   resume 成 live agent 并投递通知（0.9.1 起逐个尝试全部候选，不再"首个成功即停"）；
+- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量，0.9.1 收口，0.10.0 口径反转）：重启后自动把
+   重启前最近活跃窗口内的**全部**会话（含手动停止/正常结束的——`trackMax` 窗口说了算，
+   不看停止时是否运行中）resume 成 live agent 并投递通知（0.9.1 起逐个尝试全部候选，
+   不再"首个成功即停"）；
    subagent routing 持有的子代理会话按其**主会话祖先代理恢复**（`result: 'subagent'`，不算失败）；
    依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话，
    开机无任何 live agent 时（0.9.1）升级经 sessionController 恢复最近活跃会话投递，
    不再 `no target agent after wait`
 - 🖥️ **设置弹窗「重启」选项**（0.8.0）：设置弹窗左侧新增「重启」入口，展示重启模式说明、
-   优雅退出通道可用性与「重启后将自动恢复 N 个运行中的会话」；「重启 DSH」按钮**二次确认**
+   优雅退出通道可用性与「重启后将自动恢复 N 个活跃会话」；「重启 DSH」按钮**二次确认**
    （默认焦点「取消」的确认弹窗）后才执行，重启期间轮询新实例、就绪后页面自动刷新，
    回到页面时弹「已重启」回执 toast
 - 🔌 **重启引擎**（0.8.0，设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)）：
@@ -34,9 +36,10 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   /skipped-no-human-prompt），上限 200 条、损坏行跳过；wake.log 保留不动
 - ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
   倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
-- 🖱️ **会话顶栏开关**（0.4.0）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
+- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
   点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
-  条目只对会被重启恢复的会话显示（DSH 停止那一刻仍运行中），正常结束的会话不显示
+  条目对最近活跃窗口内（会被重启恢复）的全部会话显示——含手动停止/正常结束的会话（0.10.0 起），
+  窗口外/被忽略前缀的会话不显示
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`，
@@ -67,9 +70,9 @@ dsh plugin --profile desktop add <本目录路径>
      得出原因标签（`power-button` / `signal` / `crash` / `unknown`）后写一条 boot 记录到
      `restarts.ndjson`（随后恢复流程每结算一个候选再追加一条 restore 记录）
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
-     （优先 `recentSessions`，只取停止时仍运行中的条目——`running !== false`，缺失视为候选以兼容旧
-     marker；兼容只有 `lastSessionId` 的旧 marker；去重、按活跃时间新 → 旧、截断 `restoreMax`；
-     正常结束的会话不恢复，也不会经旧字段回退混回候选）；
+     （优先 `recentSessions`，0.10.0 口径反转：全部有效条目都是候选——手动停止/正常结束的
+     会话同样恢复，`running` 字段不再参与过滤、仅作记录；兼容只有 `lastSessionId` 的旧 marker；
+     去重、按活跃时间新 → 旧、截断 `restoreMax`）；
      **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log` 与
      重启日志，`error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
      未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
@@ -80,7 +83,7 @@ dsh plugin --profile desktop add <本目录路径>
      每候选最低 5 秒，超出预算的候选记 `skipped-budget`；失败继续下一个候选。
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
      **每个候选都会被尝试**（0.9.1：不再在第一个候选投递成功后提前结束——那会让
-     其余运行中会话既不恢复也无任何日志，0.5.0 全量恢复语义名存实亡）。
+     其余候选会话既不恢复也无任何日志，0.5.0 全量恢复语义名存实亡）。
    - **subagent 会话代理恢复**（0.9.1）：`header.origin === 'subagent'` 的候选被
      subagent routing 持有，宿主 `resolveAgent` 一律拒绝（`is owned by subagent
      routing`，正确通道是经父会话/subagent delivery），直接恢复必然失败。候选阶段
@@ -154,9 +157,9 @@ fail-closed：记录文件缺失（`session-file-missing`）、运行环境 zlib
 ### 会话顶栏开关（0.4.0，仅当前会话生效）
 
 web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
-里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token。显示门控：条目只对恢复候选会话渲染
-——即 DSH 停止那一刻仍 `running` 的会话（见下方 `GET /state` 的 `restoreCandidates`）；
-正常结束的会话不渲染任何 DOM：
+里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token。显示门控：条目对恢复候选会话渲染
+——即最近活跃窗口内的会话，0.10.0 起含手动停止/正常结束的（见下方 `GET /state` 的
+`restoreCandidates`）；窗口外/被忽略前缀的会话不渲染任何 DOM：
 
 | 状态 | 文案 | 悬停文案 | 行为 |
 |---|---|---|---|
@@ -229,9 +232,9 @@ order 62），包含三块信息与一个按钮：
 - **模式说明**：普通进程显示常规说明；检测到容器 PID=1（`resolveRestartMode()`）时
   额外提示"重启 = 优雅退出，由容器重启策略拉起；未配置策略需手动 docker start"
 - **通道检查**：宿主 `appExit` 通道缺失时显示警示（重启将退化为直接退出）
-- **恢复预告**：「重启后将自动恢复 N 个运行中的会话」（`GET /restart/info` 的
+- **恢复预告**：「重启后将自动恢复 N 个活跃会话」（`GET /restart/info` 的
   `runningCandidates`，与顶栏开关同一候选口径——被顶栏排除的会话不计入恢复，
-  但仍计入此处显示的运行中候选数；0.9.0 起该计数同口径剔除已归档会话及其
+  但仍计入此处显示的候选数；0.9.0 起该计数同口径剔除已归档会话及其
   subagent 后代，拿不到 `workspaceRegistry` 时维持现口径）
 - **「重启 DSH」按钮**：点击先弹**二次确认**模态框——默认焦点在「取消」上，Esc 与
   点击遮罩都只是取消，唯一前进路径是显式点「确认重启」；确认后才 `POST /restart`
@@ -356,7 +359,7 @@ order 62），包含三块信息与一个按钮：
 | `trackMax` | `5` | 最近活跃会话列表 `recentSessions` 的长度上限 |
 | `persistThrottleMs` | `5000` | 活动时节流落盘间隔（窗口内合并为一次写盘） |
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
-| `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部 `running !== false` 候选，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
+| `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部候选——含手动停止/正常结束的会话，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
 | `restoreTimeoutMs` | `30000` | 候选恢复阶段的总预算（ms，0.7.0 起自 `sessionController` 就绪起算，等服务不占它），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
 | `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |

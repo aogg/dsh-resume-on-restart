@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.10.0] - 2026-10-22
+
+### Changed
+- **恢复口径反转：手动停止的会话重启后同样恢复、同样显示顶栏开关**（回归 0.3.x
+  的覆盖行为，废除 0.4.0 引入的"只有 DSH 停止那一刻仍 running 的会话才恢复/才
+  显示开关"口径；0.4.0 之后的其他能力全部保留）：
+  - `pickRestoreTargets`（lib/detect.js）不再按 `running === false` 过滤候选——
+    `marker.recentSessions` 的全部有效条目（id 为非空字符串的对象条目）都是候选，
+    去重、按活跃时间新 → 旧、截断 `restoreMax` 的既有链路不变；配套的"recentSessions
+    全被 running 过滤光也不回退 `lastSessionId`"防混回逻辑随之简化为普通的
+    "有列表就整表接管，没有才走 legacy 回退"
+  - `collectRestoreCandidateIds`（lib/detect.js）同口径去掉 `running !== false`
+    条件——开关显示候选 = 恢复候选，顶栏开关对最近活跃窗口（`trackMax`）内的全部
+    会话渲染，含手动停止/正常结束的；窗口外/被忽略前缀的会话仍不显示
+  - `running` 字段的记录逻辑保留不动（`agent/status` 照常维护、marker 照常序列化），
+    但降级为纯记录字段（供重启日志与旧版本兼容），不再参与任何候选/显示过滤；
+    启动播种由"一律回填 `running: true`"改为沿用 marker 里最后已知的 running 值
+    （纯字符串旧格式 / legacy `lastSessionId` 条目仍回填 true），boot 记录
+    `runningSessions` 的 running 同步如实取值
+  - 其余过滤链全部不变：用户排除名单（`excluded-sessions.json`）、归档过滤
+    （含 subagent 后代 lineage）、subagent 代理主会话恢复、human-prompt 守卫
+    （`requireHumanPrompt`）、`trackMax` 窗口、`restoreMax` 上限
+  - lib/client.js 开关门控本就只看 `/state` 的 `restoreCandidates`（随宿主口径
+    自动放宽，无逻辑改动），仅同步更新注释与 zh/en 文案（"重启前运行中的会话"→
+    "重启前活跃的会话（含手动停止的）"、候选数单位"个运行中的会话"→"个活跃会话"）
+
 ## [0.9.1] - 2026-10-16
 
 ### Fixed
