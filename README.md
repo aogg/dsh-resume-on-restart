@@ -36,10 +36,11 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   /skipped-no-human-prompt），上限 200 条、损坏行跳过；wake.log 保留不动
 - ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
   倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
-- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
+- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转，0.11.0 状态同步改 ws 推送）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
   点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
   条目对最近活跃窗口内（会被重启恢复）的全部会话显示——含手动停止/正常结束的会话（0.10.0 起），
-  窗口外/被忽略前缀的会话不显示
+  窗口外/被忽略前缀的会话不显示；候选/排除状态由宿主 websocket 快照广播实时同步
+  （0.11.0 起，不再轮询），多标签页自动对齐
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`（上限 `trackMax`，
@@ -173,13 +174,11 @@ web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conv
 客户端（`lib/client.js`，手写 bundle、仅依赖 baseline 的 react）通过以下插件自有 API 读写状态：
 
 - `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso }, restoreCandidates: { [id]: true } }`。
-  `restoreCandidates` 取自宿主内存 `recentSessions` 的实时视图（新纯函数 `collectRestoreCandidateIds`），
+  `restoreCandidates` 取自宿主内存 `recentSessions` 的实时视图（纯函数 `collectRestoreCandidateIds`），
   不看排除集合——被排除但仍是候选的会话仍显示灰色开关；当前会话不在其中、字段缺失或请求失败
   都按「不显示」处理
 - `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
-
-候选状态的查询时机：挂载/切换会话时一次、`window` `focus` 时一次、每 15 秒轮询一次
-（`document.visibilityState !== 'visible'` 时跳过该轮）；POST 成功后不重新拉取候选集合。
+- `GET /api/dsh-resume-on-restart/ws-info` → `{ ok, port, token }`（0.11.0，见下）
 
 `sessionId` 由插槽框架注入（session 作用域标准 props，见 `@deepseek-ai/dsh-client-ui-session`
 对 `SessionStandardProps` 的 merge 声明），不使用任何 window 全局。
@@ -189,6 +188,48 @@ web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conv
 DSH 官方规则的判断——Host 必须是 loopback 或 `--trusted-host` 声明的 authority、
 全接口绑定时要求本机来源、拒绝 `sec-fetch-site: cross-site`、带 Origin 时必须同源。
 webServer 服务缺失时仅 console.warn，不阻断插件加载。
+
+### 状态同步走 websocket 快照推送（0.11.0，不再轮询）
+
+候选/排除状态的同步机制：挂载/切换会话时仍做一次 `GET /state` **一次性查询**
+（事件驱动首帧到达前的兜底），此后**不再有任何周期性拉接口的定时器**——客户端改为订阅
+宿主的 websocket 快照推送（旧版的 `window` `focus` 补偿查询与每 15 秒轮询一并移除）：
+
+- **服务端**（新文件 `lib/ws-state.js`）：零依赖的最小 RFC6455 ws 服务端
+  （node:http + node:crypto 手写：`Sec-WebSocket-Accept = base64(sha1(key + GUID))`、
+  客户端掩码去除、ping/pong/close、最简分片；只发**不加掩码**的文本帧；单帧 1MiB 上限，
+  超出按 1009 关闭；30 秒心跳回收半开连接；连接数上限 64 兜底）。
+  bind `0.0.0.0` + 随机端口（port 0）——可达性与宿主 webServer 一致，用户从局域网 IP
+  打开的 GUI 同样可用；`server.unref()` 与每条连接 socket `unref()` 都不改变进程退出行为；
+  随注册它的 `ctx.effect` 的 dispose 关闭；listen 失败只 console.warn 降级
+  （此时 `/ws-info` 返回 503，开关退化为本组件挂载时的一次性查询），绝不阻断插件加载
+- **接入与安全**：进程启动时生成随机 token；`GET /ws-info` 在既有前缀路由内、过同一
+  信任围栏（宿主 `connection.requestRejection` 优先 + 最小围栏），**一次性**返回
+  `{ ok, port, token }`（不是轮询）。ws 升级握手校验 query 里的 token（sha256 摘要后
+  timing-safe 比较）+ 与 HTTP 路由同口径的信任围栏（不信任直接 destroy，不给回包）。
+  ws 监听在独立随机端口上，浏览器对跨端口 ws 握手必上报 `sec-fetch-site: cross-site`、
+  Origin 是「页面来源」（宿主 webServer 的端口）——升级围栏因此做两点适配（`explainWsUpgradeTrust`）：
+  Host 主机名仍须 loopback 或 `--trusted-host` 声明（按主机名匹配，防 DNS rebinding）；
+  `sec-fetch-site` 不再作为 ws 的否决项，同侧防护改由「随机 token + Origin 必须与 ws
+  同主机名且端口等于宿主 webServer 端口」承担
+- **推送协议**：连接建立后服务端立即推一帧**全量快照**
+  `{ type:'state', restoreCandidates: { [id]: true }, excluded: { [id]: iso } }`
+  （与 `GET /state` 同口径；客户端重连成功后的状态重建就靠它）；此后排除集合变化
+  （`POST /state` 成功后）与候选集变化（`recordActivity` 的 `agent/*` 活动事件触发点）
+  都广播同一快照结构。高频活动事件（`agent/assistant-stream` 等）做 **300ms 首发立即 +
+  窗口合并节流**；快照内容没变（如同 id 活动只挪动 `recentSessions` 顺序、id 集合没变）
+  直接跳过不重发，避免风暴
+- **客户端**：模块级单例 ws 管理器——首个订阅者出现时懒拉一次 `/ws-info` 建连接
+  （`ws(s)://<location.hostname>:<port>/?token=...`，协议随页面 `location.protocol`），
+  快照按 sessionId 分发给订阅者（`ResumeToggle` 在 `useEffect` 里订阅自己的 id；
+  已有快照时新订阅同步补发，切换会话零等待）。`/ws-info` 拉取失败与 ws 连接失败/断开
+  都**无限重试**（指数退避 1s 起、封顶 5s，每轮重新拉 `/ws-info`——DSH 重启后随机端口
+  会变），**永不回退轮询**。开关点击仍是 `POST /state`（乐观更新 + 失败回滚不变），
+  服务端广播让各标签页（含发起方）自动对齐到同一服务端口径
+
+「重启 dsh」功能的轮询是**豁免区**，保持不动：设置弹窗「重启」按钮确认后的
+`/restart/health` 轮询、页面加载时的 `checkRestartedToast`、以及宿主恢复链路的
+`waitForSessionController` / `fallbackWake` / `restoreCandidates` 均原样保留。
 
 ### 重启日志与设置弹窗（0.5.0）
 

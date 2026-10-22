@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.11.0] - 2026-10-22
+
+### Changed
+- **顶栏开关状态同步从 15 秒轮询改为 websocket 快照推送**（用户规则：能不用轮询接口就
+  不用轮询、改用 websocket；ws 连接失败必须一直重试、绝不回退轮询。唯一豁免的
+  「重启 dsh」轮询不受影响，豁免区零改动）：
+  - **新增 `lib/ws-state.js`（零依赖最小 RFC6455 服务端，node:http + node:crypto，
+    不新增任何 npm 依赖）**：`Sec-WebSocket-Accept = base64(sha1(key + GUID))` 握手、
+    客户端掩码去除、ping/pong/close、最简分片（客户端数据不消费，只为正确吃掉字节流）、
+    只发不加掩码的文本帧、单帧/累积缓冲 1MiB 上限（超出 1009 关闭）、30s 心跳回收
+    半开连接、连接数上限 64 兜底；bind `0.0.0.0` + 随机端口（可达性与宿主 webServer
+    一致，局域网 IP 打开的 GUI 同样可用），`server.unref()` + 连接 socket `unref()`
+    不改变进程退出行为；随注册它的 `ctx.effect` dispose 关闭；listen 失败只
+    console.warn 降级，绝不炸插件加载
+  - **安全**：进程启动生成随机 token（base64url 24 字节）；既有前缀路由新增
+    `GET /ws-info`（过既有信任围栏：宿主 `connection.requestRejection` 优先 + 最小围栏）
+    一次性返回 `{ ok, port, token }`（不是轮询）；ws 升级握手校验 query 的 token
+    （sha256 摘要后 `timingSafeEqual`）+ 与 HTTP 路由同口径的信任围栏
+    （新纯函数 `explainWsUpgradeTrust`，不信任直接 destroy 不给回包）。ws 拓扑适配：
+    跨端口 ws 握手 `sec-fetch-site` 必为 `cross-site`、Origin 是页面来源（宿主
+    webServer 端口）——Host 主机名仍须 loopback/`--trusted-host` 声明（按主机名匹配，
+    防 DNS rebinding），`sec-fetch-site` 不再否决，同侧防护由「随机 token + Origin
+    必须与 ws 同主机名且端口等于宿主 webServer 端口」承担
+  - **推送协议**：连接建立后立即推一帧全量快照 `{ type:'state', restoreCandidates,
+    excluded }`（与 `GET /state` 同口径）；排除集合变化（`POST /state` 成功后）与
+    候选集变化（`recordActivity` 触发点）都广播同一快照；高频活动事件做 300ms
+    首发立即 + 窗口合并节流，快照内容没变（如同 id 活动只挪动 `recentSessions` 顺序）
+    直接跳过不重发
+  - **`lib/client.js`**：彻底删除 `POLL_INTERVAL_MS` 与 15 秒 `setInterval`（及补偿性
+    的 window focus 查询）——全文件不再有任何周期性拉接口的定时器；新增模块级单例
+    ws 管理器：懒拉一次 `/ws-info` → `new WebSocket(ws(s)://<hostname>:<port>/?token=...)`
+    （协议随页面 `location.protocol`），快照按 sessionId 分发（`ResumeToggle` 在
+    `useEffect` 里订阅自己的 id，已有快照时新订阅同步补发）；`/ws-info` 拉取失败与
+    ws 连接失败/断开都无限重试（指数退避 1s 起、封顶 5s，每轮重拉 `/ws-info`——
+    DSH 重启后随机端口会变），重连成功后服务端快照即完成状态重建，多标签页自动对齐；
+    挂载时保留一次性 `GET /state`（事件驱动首帧前的兜底，非轮询，且被更晚到的
+    ws 快照保护不被覆盖）；开关点击仍是 `POST /state`（乐观更新 + 失败回滚不变）
+  - **豁免区零改动**：`RestartSection` 的 `/restart/health` 轮询、`checkRestartedToast`、
+    `lib/restart.js` 全部、宿主 `waitForSessionController` / `fallbackWake` /
+    `restoreCandidates` 均原样保留
+- package.json 版本 `0.10.0` → `0.11.0`
+
 ## [0.10.0] - 2026-10-22
 
 ### Changed
