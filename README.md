@@ -178,7 +178,8 @@ web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conv
   不看排除集合——被排除但仍是候选的会话仍显示灰色开关；当前会话不在其中、字段缺失或请求失败
   都按「不显示」处理
 - `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
-- `GET /api/dsh-resume-on-restart/ws-info` → `{ ok, port, token }`（0.11.0，见下）
+- `GET /api/dsh-resume-on-restart/ws-info` → `{ ok, token }`（0.11.0 引入；0.12.0 起
+  不再返回 port，见下）
 
 `sessionId` 由插槽框架注入（session 作用域标准 props，见 `@deepseek-ai/dsh-client-ui-session`
 对 `SessionStandardProps` 的 merge 声明），不使用任何 window 全局。
@@ -195,23 +196,29 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
 （事件驱动首帧到达前的兜底），此后**不再有任何周期性拉接口的定时器**——客户端改为订阅
 宿主的 websocket 快照推送（旧版的 `window` `focus` 补偿查询与每 15 秒轮询一并移除）：
 
-- **服务端**（新文件 `lib/ws-state.js`）：零依赖的最小 RFC6455 ws 服务端
-  （node:http + node:crypto 手写：`Sec-WebSocket-Accept = base64(sha1(key + GUID))`、
+- **服务端**（`lib/ws-state.js`，0.12.0 起为「升级处理器 + 推送 hub」）：零依赖的最小
+  RFC6455 ws 服务端逻辑（node:crypto 手写：`Sec-WebSocket-Accept = base64(sha1(key + GUID))`、
   客户端掩码去除、ping/pong/close、最简分片；只发**不加掩码**的文本帧；单帧 1MiB 上限，
   超出按 1009 关闭；30 秒心跳回收半开连接；连接数上限 64 兜底）。
-  bind `0.0.0.0` + 随机端口（port 0）——可达性与宿主 webServer 一致，用户从局域网 IP
-  打开的 GUI 同样可用；`server.unref()` 与每条连接 socket `unref()` 都不改变进程退出行为；
-  随注册它的 `ctx.effect` 的 dispose 关闭；listen 失败只 console.warn 降级
+  0.11.0 曾自建 http.Server bind `0.0.0.0` + 随机端口；0.12.0 起不自建 server——
+  由 index.js 经宿主 `webServer.registerUpgrade` 把升级处理器挂在宿主主端口的精确
+  路径 `/api/dsh-resume-on-restart/ws` 上（同源同端口；宿主按 pathname 精确分发、
+  对升级路由不做围栏/认证，由插件 handler 全权负责）；
+  随注册它的 `ctx.effect` 的 dispose 移除升级路由并关闭全部连接；宿主不支持
+  `registerUpgrade`（旧版宿主）或注册失败只 console.warn 降级
   （此时 `/ws-info` 返回 503，开关退化为本组件挂载时的一次性查询），绝不阻断插件加载
 - **接入与安全**：进程启动时生成随机 token；`GET /ws-info` 在既有前缀路由内、过同一
   信任围栏（宿主 `connection.requestRejection` 优先 + 最小围栏），**一次性**返回
-  `{ ok, port, token }`（不是轮询）。ws 升级握手校验 query 里的 token（sha256 摘要后
+  `{ ok, token }`（不是轮询；0.11.0 曾含 port，0.12.0 起同源不再需要）。
+  ws 升级握手校验 query 里的 token（sha256 摘要后
   timing-safe 比较）+ 信任围栏（0.11.1：宿主 `connection.requestRejection` 仅 401
   直接拒绝；403 不再照单全收——宿主围栏的 `sec-fetch-site` 与 Origin host:port
   精确匹配两条规则为同端口 HTTP API 设计、不适配跨端口 ws，回退下述
   `explainWsUpgradeTrust` 裁决；宿主放行维持放行、宿主未提供该服务维持回退）。
-  ws 监听在独立随机端口上，浏览器对跨端口 ws 握手必上报 `sec-fetch-site: cross-site`、
-  Origin 是「页面来源」（宿主 webServer 的端口）——升级围栏因此做两点适配（`explainWsUpgradeTrust`）：
+  随机端口时代 ws 监听在独立端口上，跨端口 ws 握手必上报 `sec-fetch-site: cross-site`、
+  Origin 是「页面来源」（宿主 webServer 的端口）——升级围栏因此做两点适配
+  （`explainWsUpgradeTrust`；0.12.0 起同源，正常路径先命中宿主围栏放行的快速分支，
+  适配保留为防御）：
   Host 主机名仍须 loopback 或宿主可信名单（按主机名匹配，防 DNS rebinding；0.11.1
   起与宿主围栏同源：优先读 `connection` 服务生效名单——含绑 0.0.0.0 时
   `resolveLanTrust` 自动派生的本机局域网地址，CLI `--trusted-host` 声明仅作回退，
@@ -230,13 +237,15 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
   窗口合并节流**；快照内容没变（如同 id 活动只挪动 `recentSessions` 顺序、id 集合没变）
   直接跳过不重发，避免风暴
 - **客户端**：模块级单例 ws 管理器——首个订阅者出现时懒拉一次 `/ws-info` 建连接
-  （`ws(s)://<location.hostname>:<port>/?token=...&cid=<标签页随机 id>`，
-  协议随页面 `location.protocol`；cid 为页面加载时生成一次的随机 id，0.11.1 起
+  （`ws(s)://<location.host>/api/dsh-resume-on-restart/ws?token=...&cid=<标签页随机 id>`，
+  0.12.0 起同源路径（宿主主端口，`location.host` 自带端口）；协议随页面
+  `location.protocol`；cid 为页面加载时生成一次的随机 id，0.11.1 起
   追加，供服务端拒绝日志区分来源标签页），
   快照按 sessionId 分发给订阅者（`ResumeToggle` 在 `useEffect` 里订阅自己的 id；
   已有快照时新订阅同步补发，切换会话零等待）。`/ws-info` 拉取失败与 ws 连接失败/断开
-  都**无限重试**（指数退避 1s 起、封顶 5s，每轮重新拉 `/ws-info`——DSH 重启后随机端口
-  会变），**永不回退轮询**。开关点击仍是 `POST /state`（乐观更新 + 失败回滚不变），
+  都**无限重试**（指数退避 1s 起、封顶 5s，每轮重新拉 `/ws-info`——DSH 重启后插件
+  实例重建、token 换新），**永不回退轮询**。开关点击仍是 `POST /state`（乐观更新 +
+  失败回滚不变），
   服务端广播让各标签页（含发起方）自动对齐到同一服务端口径
 
 「重启 dsh」功能的轮询是**豁免区**，保持不动：设置弹窗「重启」按钮确认后的

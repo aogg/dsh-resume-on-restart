@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.12.0] - 2026-10-26
+
+### Changed
+
+- **ws 状态推送从「插件自监听随机端口」迁移到宿主 DSH webServer 主端口 + 插件路径**
+  （升级端点改为同源的 `GET(Upgrade) /api/dsh-resume-on-restart/ws`）。动机：0.11.0
+  起 ws 服务端 bind `0.0.0.0` + 随机端口，整套拓扑都被迫围绕「跨端口」打补丁——
+  - 跨端口 ws 握手必报 `sec-fetch-site: cross-site`、宿主围栏按 host:port 精确匹配
+    Origin 必拒 → 0.11.1 被迫加 403 回退补丁（`explainWsUpgradeTrust` 裁决）；
+  - 容器端口发布 NAT 下合法浏览器来源 socket 必非 loopback → 又加
+    socket-not-loopback 跳过补丁；
+  - 端口要经 `/ws-info` 下发，DSH 重启后端口变化客户端还要重拉重连。
+  现改为经宿主 `webServer.registerUpgrade` 把升级处理器挂在宿主主端口的精确路径
+  `HTTP_BASE + '/ws'` 上（宿主 server 的 'upgrade' 事件按 pathname 精确查表分发、
+  查不到 destroy；宿主对升级路由不做围栏/认证，仍由插件 handler 全权负责，职责
+  与原实现一致），同源同端口后上述补丁不再必需：
+  - `lib/ws-state.js` 从「自持 http.Server」重构为「升级处理器 + 推送 hub」：
+    移除自建 server、bind、随机端口与 `start()`，改为导出
+    `handleUpgrade(req, socket, head)`（token timing-safe 校验、注入的
+    verifyUpgrade 围栏、协议头校验、连接登记、首帧全量快照的顺序与逻辑不变）；
+    连接数上限、1MiB 帧上限、30s 心跳回收、300ms 合并节流 + 内容去重广播、
+    close() 清理全部连接全部保留；socket 生命周期交宿主 upgradedSockets 统一管理，
+    本侧 dispose 只发 close 帧后 destroy；`info()` 返回 `{ ok, token }`
+  - `lib/index.js`：`ctx.inject(['webServer'], ...)` 内防御式探测
+    `typeof webServer.registerUpgrade === 'function'`，可用则注册升级路由
+    （同名路径被占等注册失败只 console.warn 降级）；不可用（旧版宿主）同样降级：
+    `wsPush` 保持 null、`/ws-info` 返回 503、客户端按既定设计无限重试但开关退化
+    为一次性 GET /state，绝不炸插件加载；effect 清理函数里调用注册返回的
+    disposer + `wsPush.close()`。围栏逻辑全部保留不动（401/403 回退顺序、
+    `explainWsUpgradeTrust`、容器跳过 socket-not-loopback、cid 解析、节流拒绝
+    日志）——同源之后正常路径先命中「宿主围栏放行」的快速分支，这些防御不碍事
+  - `lib/client.js`：ws URL 改同源
+    `ws(s)://<location.host>/api/dsh-resume-on-restart/ws?token=...&cid=...`
+    （协议仍随 `location.protocol`，`location.host` 自带端口）；`/ws-info` 照旧
+    一次性拉取（拿 token），响应里不再有 port 字段也不读它；指数退避 1s~5s
+    无限重试策略不变
+- **`/ws-info` 契约变化**：`{ ok, port, token }` → `{ ok, token }`（不再返回
+  port）；服务不可用仍返回 503，语义不变
+
 ## [0.11.1] - 2026-10-26
 
 ### Fixed
