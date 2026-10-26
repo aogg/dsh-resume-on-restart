@@ -24,7 +24,8 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    （默认焦点「取消」的确认弹窗）后才执行，重启期间轮询新实例、就绪后页面自动刷新，
    回到页面时弹「已重启」回执 toast
 - 🕒 **确认后待恢复列表与恢复结果对账**（0.13.0）：确认重启后展示「待重启恢复会话列表」
-   （会话 id + 最后活跃时间 + 运行中标记）与「已等待 N 秒」等待计时；重启完成页面刷新后，
+   （会话标题为主、完整 id 悬停提示 + 最后活跃时间 + 运行中标记）与「已等待 N 秒」等待计时；
+   重启完成页面刷新后，
    同一位置原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话结算徽标
    （已恢复/恢复失败/已被用户排除/已归档跳过/经主会话代理恢复/预算耗尽跳过/
    无人工输入跳过/待结算——服务端结算是异步的，短轮询对账，超时未结算如实显示）
@@ -304,7 +305,8 @@ order 62），包含三块信息与一个按钮：
   但仍计入此处显示的候选数；0.9.0 起该计数同口径剔除已归档会话及其
   subagent 后代，拿不到 `workspaceRegistry` 时维持现口径；0.13.0 起候选为
   对象明细 `[{ id, at, running, title? }]`，携带真实最后活跃时间、运行态与
-  防御式会话标题，见下方「确认后的可视化与恢复结果对账」）
+  防御式会话标题（session projection 优先、header 回退），见下方
+  「确认后的可视化与恢复结果对账」）
 - **「重启 DSH」按钮**：点击先弹**二次确认**模态框——默认焦点在「取消」上，Esc 与
   点击遮罩都只是取消，唯一前进路径是显式点「确认重启」；确认后才 `POST /restart`
 
@@ -328,12 +330,14 @@ instanceId 基线判定是豁免区，一行未动）：
 
 1. **待恢复会话列表**：进入 confirm 弹窗时重新拉一次 `GET /restart/info`（列表取
    点击时刻的最新口径）；POST `/restart` 成功进入 waiting 阶段后展示
-   「待重启恢复会话列表」——每行 = 截断会话 id（+ 防御式会话标题）+ 最后活跃
-   本地时间（at 缺失显示 —）+ `● 运行中` 标记；列表空显示「无待恢复会话」
+   「待重启恢复会话列表」——每行 = 会话标题为主（省略号截断、全文在元素 title
+   属性悬停可见；标题缺失退回截断 id 并弱化显示）+ 最后活跃本地时间（at 缺失
+   显示 —）+ `● 运行中` 标记；完整会话 id 一律放在行容器的 title 属性做悬停
+   提示，不再作为行主文本；列表空显示「无待恢复会话」
 2. **等待计时**：waiting 阶段显示「重启中… 已等待 N 秒」（组件内 setInterval
    每秒跳动，离开 waiting/组件卸载即清理；超时提示逻辑不变）
 3. **存根落盘**：POST 成功后把 `{ at: 确认时刻ISO, restartId?（响应里缺失则省略）,
-   candidates: [{id, at, running}] }` 覆盖写入 localStorage（key
+   candidates: [{id, at, running, title?（空则省略）}] }` 覆盖写入 localStorage（key
    `dsh-ror-pending-restore`，单条覆盖式，写入包 try/catch）；POST 失败回 idle：
    计时器随 phase 清理、列表保留显示、按钮回到可重试态（现状行为不变）
 4. **重启后对账**：页面（重启后自动刷新）重新挂载时读存根（无则什么都不显示，
@@ -341,7 +345,8 @@ instanceId 基线判定是豁免区，一行未动）：
    `boot.origin.restartId` 相等优先，否则回退取 `boot.at >= pending.at - 2min`
    时钟容差的最新一条；找到后收集该 bootAt 之后的全部 restore 记录按会话 id
    归组，待恢复列表原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话
-   结算徽标：`resumed`=已恢复 / `failed`=恢复失败（展示 error 摘要）/
+   结算徽标（徽标之外同样以存根携带的会话标题为主，无 title 退回截断 id 弱化）：
+   `resumed`=已恢复 / `failed`=恢复失败（展示 error 摘要）/
    `excluded`=已被用户排除 / `archived`=已归档跳过 / `subagent`=经主会话代理恢复 /
    `skipped-budget`=预算耗尽跳过 / `skipped-no-human-prompt`=无人工输入跳过 /
    无 restore 记录=待结算
@@ -353,9 +358,13 @@ instanceId 基线判定是豁免区，一行未动）：
 服务端配套（lib/index.js）：`GET /restart/info` 的 `runningCandidates` 从
 `string[]` 升级为候选明细对象数组 `[{ id, at, running, title? }]`——真实最后活跃
 时间（回查内存 `recentSessions`，ISO 输出、未知为 ''，与 boot 记录
-`runningSessions` 同款口径）、最后已知运行态、以及经 `ctx.reflect.get('sessions')`
-防御式探测的会话标题（`record.title` / `record.header.title`，非空字符串才采纳；
-store 缺失/形状不对/抛异常一律不带该字段，绝不阻塞路由）。归档剔除 + subagent
+`runningSessions` 同款口径）、最后已知运行态、以及防御式探测的会话标题：
+DSH 宿主的会话标题不在 header，而是 session projection（`session/title` 事件的
+last-wins 投影），故首选 `ctx.reflect.get('sessionProjections').stateOf(
+sessions.get(id), 'title')`（非空字符串才采纳），回退 `record.title` /
+`record.header.title`（无害防御）；`sessions.get(id)` 为 undefined 时不自造对象
+直接放弃。任何一层缺失/异常都静默降级到下一层（只 console.warn），一律不带
+title 字段，绝不阻塞路由。归档剔除 + subagent
 拆分的候选口径完全不变（`directRestorableCandidates`）。对账匹配/归组逻辑抽成
 可测纯函数（`matchPendingBoot` / `collectSettlementsBySession` 等），见
 `lib/pending-restore.test.js`。
@@ -434,7 +443,8 @@ store 缺失/形状不对/抛异常一律不带该字段，绝不阻塞路由）
 - `GET /api/dsh-resume-on-restart/restart/info` → `{ ok, mode, pid, instanceId,
   appExit, isContainer, restartDelayMs, pid1ExitCode, runningCandidates }`
   （0.13.0 起 `runningCandidates` 为候选明细对象数组 `[{ id, at, running, title? }]`：
-  真实最后活跃时间 ISO（未知为 ''）、最后已知运行态、防御式会话标题；
+  真实最后活跃时间 ISO（未知为 ''）、最后已知运行态、防御式会话标题
+  （session projection `session/title` 投影优先、header 回退）；
   0.12.x 及更早为 `string[]`）
 - `GET /api/dsh-resume-on-restart/restart/health` → `{ ok, instanceId, pid, mode,
   lifecycle, appExit[, restart: { restartId, fromInstanceId }][, restarted] }`

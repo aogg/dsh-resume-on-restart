@@ -50,6 +50,33 @@
   新增 title 防御探测接线测试；新增 `lib/pending-restore.test.js`（存根读写、
   boot 匹配、restore 归组、候选明细归一化），挂进 `npm test`
 
+### Fixed
+
+- **待重启恢复会话列表显示会话标题而不是会话 id 列表**（0.13.0 交付后的用户反馈修正）：
+  - **根因**：0.13.0 的 title 探测读的是 `sessions.get(id).title` / `.header.title`，
+    但 DSH 宿主的会话标题不在 header——它是 session projection（`session/title`
+    事件的 last-wins 投影），探测几乎必落空 → 列表只显示会话 id
+  - **宿主 title 读取链重排**（lib/index.js `sessionTitleLookup`）：首选
+    `ctx.reflect.get('sessionProjections').stateOf(sessions.get(id), 'title')`
+    （同步、物化到该 Session 当前游标；非空字符串才采纳，null/undefined/非 string
+    都不要）；次选保留 `record.title` / `record.header.title` 回退（无害防御）；
+    都没有 → 不带 title 字段。`sessions.get(id)` 为 undefined（未入 store/被逐出）
+    时不自造对象去调 stateOf，直接走回退/放弃；服务探测失败、stateOf 抛异常只
+    console.warn 一次后静默降级到下一层，绝不阻塞 `/restart/info` 路由
+  - **客户端列表改「标题为主、id 退位」**（lib/client.js）：待恢复列表（waiting
+    阶段）与重启后对账视图（settlement）的每行改为「徽标/标记 + 会话标题
+    （flex:1 省略号截断，全文在元素 title 属性）+ 最后活跃时间 / error 摘要」；
+    title 缺失（未命名会话/旧存根）才退回 shortId 且用弱化色（新样式类
+    `.dsh-ror-restore-title` / `.dsh-ror-restore-title-fallback`），完整 id 一律
+    放行容器 title 属性做悬停提示，不再作为行主文本。localStorage 存根 candidates
+    同步携带 title（`{ id, at, running, title? }`，title 空则省略字段），
+    `readPendingRestore` 归一化保留非空字符串 title
+  - **测试**：`archive.test.js` 的 title 接线改为 mock `sessionProjections`
+    （stateOf 返回标题）+ sessions（活 Session 对象）验证投影首选链路，并补断言
+    stateOf 返回 null / sessions.get 为 undefined / projections 探测抛异常时的
+    回退与降级、服务全缺失不带 title 且路由 200；`pending-restore.test.js` 补
+    title 保留/省略断言
+
 ### Notes
 
 - `/restart/health` 轮询的成功判定逻辑（instanceId 基线比对）是豁免区，
