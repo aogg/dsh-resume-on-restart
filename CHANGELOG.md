@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.11.1] - 2026-10-26
+
+### Fixed
+
+- **修复 ws 升级被宿主围栏误拒导致的日志刷屏**（线上症状：DSH 服务端日志被
+  `[resume-on-restart] ws upgrade rejected by host fence: host-fence` 每 1~5 秒刷
+  一行，会话恢复完成后仍持续）。根因有两层：
+  - **宿主 HTTP 围栏误伤跨端口 ws**（根修）：`verifyWsUpgrade` 把宿主
+    `connection.requestRejection` 的 403 原样照单全收，而该围栏为同端口 HTTP API
+    设计——请求带 Origin 时要求与请求 host:port 精确同源、对 `sec-fetch-site:
+    cross-site` 一票否决；「页面 :3080 ↔ ws 随机端口」的跨端口 ws 每次握手必 403
+    → ws 永远连不上 → 客户端按既定设计无限重试（1s~5s 退避，README 明确绝不回退
+    轮询）→ 服务端每次拒绝一行日志。现裁决顺序重构：401 仍直接拒绝
+    （not-authenticated，语义不变）；403 不再照单全收，回退插件自带的 ws 拓扑适配
+    围栏 `explainWsUpgradeTrust` 裁决；`undefined`（宿主放行）维持放行；`null`
+    （宿主未提供该服务）维持回退本插件围栏
+  - **容器 NAT 适配**（仅修 403 回退还不够）：docker 部署经端口发布 NAT 进来的
+    合法浏览器，来源 socket 必非 127.0.0.1（是 docker 网桥地址），原
+    `socket-not-loopback` 检查会把所有合法标签页拒之门外。现该检查仅在非容器环境
+    执行（`/.dockerenv` 在 apply() 里 stat 一次，`/restart/info` 的 isContainer
+    同源复用），其余围栏规则不变——Host 主机名信任、Origin 拓扑匹配、随机 token
+    timing-safe 校验三道闸全部保留
+- **ws 升级拒绝日志节流去重**（日志纪律）：新增 `createWsUpgradeRejectLogger`，
+  key = `reason|remoteAddress|cid`——同 key 首次输出完整明细；60 秒窗口内静默；
+  窗口后再触发补一行并带累计抑制数（如 `(suppressed 12 in last 60s)`）。每条输出
+  都带区分明细：reason、来源 socket 地址、Host、Origin（头值一律过 `logSafeHeader`
+  防伪行截断）、cid，缺失项显示 `<absent>`。401 路径与 403 回退后仍被插件围栏拒绝
+  的路径都走该助手；HTTP 路由的 `refuse()` 维持不打日志
+- **ws URL 追加每标签页随机标识 cid**：ws 升级层没有会话概念，客户端（lib/client.js）
+  页面加载时生成一次随机 id（`crypto.randomUUID` 优先、`Math.random` 拼接降级，
+  清洗为 URL 安全字符并截断 ≤64）追加为 `&cid=`；服务端升级路径从 req.url 解析
+  （非法/缺失按 `<absent>`），纳入节流 key 与日志明细。客户端无限重试策略不变
+  （既定设计，绝不回退轮询）
+- **ws 围栏信任源对齐宿主生效名单**（403 回退后的最后一处根因：上两步修完线上仍
+  每分钟一条 `ws upgrade rejected: host-untrusted` 汇总日志）。页面从局域网/容器
+  IP（如 `http://172.19.0.199:3080`）打开时，插件围栏的 Host 主机名检查读的是
+  `webStartup.trustedHosts`——那里只有 CLI `--trusted-host` 参数（本部署未配置 →
+  空数组）；而宿主围栏实际使用的是 `connection` 服务经 `resolveLanTrust` 合成的
+  生效名单（webServer 绑 0.0.0.0 时自动并入本机全部非内部 IPv4）。两份名单不一致
+  使插件围栏比宿主严：宿主放行的页面来源 ws 仍 `host-untrusted` → 客户端按既定
+  设计无限重试。现 `declaredTrustedHosts` 按优先级读取：`ctx.get('connection')
+  .trustedHosts`（宿主 `requestRejection` 实际使用的生效名单，GUI 能从该 IP 正常
+  打开即证明目标地址在其内）→ 回退 `webStartup.trustedHosts`（CLI 声明）→ 都没有
+  为空数组；防御式取值仅收字符串数组元素
+
 ## [0.11.0] - 2026-10-22
 
 ### Changed

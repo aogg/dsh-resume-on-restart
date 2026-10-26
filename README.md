@@ -206,12 +206,22 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
 - **接入与安全**：进程启动时生成随机 token；`GET /ws-info` 在既有前缀路由内、过同一
   信任围栏（宿主 `connection.requestRejection` 优先 + 最小围栏），**一次性**返回
   `{ ok, port, token }`（不是轮询）。ws 升级握手校验 query 里的 token（sha256 摘要后
-  timing-safe 比较）+ 与 HTTP 路由同口径的信任围栏（不信任直接 destroy，不给回包）。
+  timing-safe 比较）+ 信任围栏（0.11.1：宿主 `connection.requestRejection` 仅 401
+  直接拒绝；403 不再照单全收——宿主围栏的 `sec-fetch-site` 与 Origin host:port
+  精确匹配两条规则为同端口 HTTP API 设计、不适配跨端口 ws，回退下述
+  `explainWsUpgradeTrust` 裁决；宿主放行维持放行、宿主未提供该服务维持回退）。
   ws 监听在独立随机端口上，浏览器对跨端口 ws 握手必上报 `sec-fetch-site: cross-site`、
   Origin 是「页面来源」（宿主 webServer 的端口）——升级围栏因此做两点适配（`explainWsUpgradeTrust`）：
-  Host 主机名仍须 loopback 或 `--trusted-host` 声明（按主机名匹配，防 DNS rebinding）；
+  Host 主机名仍须 loopback 或宿主可信名单（按主机名匹配，防 DNS rebinding；0.11.1
+  起与宿主围栏同源：优先读 `connection` 服务生效名单——含绑 0.0.0.0 时
+  `resolveLanTrust` 自动派生的本机局域网地址，CLI `--trusted-host` 声明仅作回退，
+  避免 LAN 部署下插件围栏比宿主严、ws 永远 host-untrusted）；
   `sec-fetch-site` 不再作为 ws 的否决项，同侧防护改由「随机 token + Origin 必须与 ws
-  同主机名且端口等于宿主 webServer 端口」承担
+  同主机名且端口等于宿主 webServer 端口」承担。0.11.1 另做容器适配：docker 部署经
+  端口发布 NAT 进来的合法浏览器来源 socket 必非 loopback，`socket-not-loopback`
+  检查仅在非容器环境执行（容器内跳过，其余规则不变）。拒绝日志按
+  `reason|remoteAddress|cid` 节流去重（60 秒窗口一条 + 累计抑制数补报，每条带
+  reason/来源 socket/Host/Origin/cid 明细），客户端既定设计的无限重试不再刷屏
 - **推送协议**：连接建立后服务端立即推一帧**全量快照**
   `{ type:'state', restoreCandidates: { [id]: true }, excluded: { [id]: iso } }`
   （与 `GET /state` 同口径；客户端重连成功后的状态重建就靠它）；此后排除集合变化
@@ -220,7 +230,9 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
   窗口合并节流**；快照内容没变（如同 id 活动只挪动 `recentSessions` 顺序、id 集合没变）
   直接跳过不重发，避免风暴
 - **客户端**：模块级单例 ws 管理器——首个订阅者出现时懒拉一次 `/ws-info` 建连接
-  （`ws(s)://<location.hostname>:<port>/?token=...`，协议随页面 `location.protocol`），
+  （`ws(s)://<location.hostname>:<port>/?token=...&cid=<标签页随机 id>`，
+  协议随页面 `location.protocol`；cid 为页面加载时生成一次的随机 id，0.11.1 起
+  追加，供服务端拒绝日志区分来源标签页），
   快照按 sessionId 分发给订阅者（`ResumeToggle` 在 `useEffect` 里订阅自己的 id；
   已有快照时新订阅同步补发，切换会话零等待）。`/ws-info` 拉取失败与 ws 连接失败/断开
   都**无限重试**（指数退避 1s 起、封顶 5s，每轮重新拉 `/ws-info`——DSH 重启后随机端口
