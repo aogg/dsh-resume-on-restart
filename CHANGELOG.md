@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.14.0] - 2026-10-26
+
+### Added
+
+- **设置弹窗「重启」：待重启恢复会话列表的逐行与批量「取消 / 恢复」操作**
+  （lib/client.js RestartSection，0.13.0 引入的列表原位扩展；后端零改动）：
+  - **行级操作**：每行行尾「取消 / 恢复」小按钮——未取消行「取消」把该会话标记为
+    重启后不自动恢复，点击后乐观变为已取消态（弱化样式 + 「已取消」徽标，行保留在
+    列表中不许消失，否则无法撤销）；已取消行「恢复」撤销标记、行回到正常态
+  - **批量工具条**：列表标题与行之间 = 全选 checkbox（支持半选 indeterminate）+
+    「已选 N 项」计数 +「取消所选」「恢复所选」两个按钮，无选中行时按钮禁用；
+    waiting 阶段（重启已发出）列表转只读——checkbox 与全部操作按钮隐藏，重启后
+    对账视图（settlement）保持只读不动
+  - **接口复用**：既有 `POST /api/dsh-resume-on-restart/state`（body
+    `{ sessionId, excluded: true|false }`）每会话一次请求，批量对选中行逐个
+    **串行**发送；乐观更新 + 失败仅回滚对应行并 console.warn（风格照抄顶栏开关
+    ResumeToggle.toggle）；在途行禁用自身按钮防重复点击
+  - **数据口径**：行数据本地扩展 `cancelled` 标记（组件本地 state），不写入
+    localStorage 存根——存根 schema 不变、candidates 仍含全部行，被取消会话重启后
+    由服务端 restore 记录结算为 excluded，对账视图已有「已被用户排除」徽标，
+    对账逻辑零改动
+
+### Changed
+
+- **openConfirm 口径合并（防「取消后无法恢复」）**：`pendingRows` 已存在时不再直接
+  用服务端列表覆盖，改经新导出纯函数 `mergePendingRows(prevRows, nextRows)` 合并——
+  服务端返回的行为准（`cancelled` 字段用本地旧值，title 服务端缺失时回退本地旧值），
+  本地已有但服务端不再返回的行保留并置 `cancelled: true`（服务端已把该会话剔除出
+  恢复候选 = 取消生效）；`pendingRows === null`（首次）维持现状直接用服务端列表；
+  选中集合随合并同步只保留仍存在的行
+- **「重启后将自动恢复 N 个活跃会话」计数**：待恢复列表存在时改按未取消行数实时
+  显示（新导出纯函数 `activePendingCount(rows)`），行级/批量取消后即时反映；列表
+  不存在（本轮没点过按钮）维持 `/restart/info` 的服务端计数
+- **新增导出纯函数**（从 client bundle 工厂导出，供 node --test 经
+  `window.__ModuleLoader__` 桩加载后直接单测）：`mergePendingRows`（服务端为准 +
+  本地取消标记保留 + 服务端缺行置 cancelled + 按 id 去重防御）、
+  `setPendingCancelled(rows, ids, cancelled)`（返回新数组不改入参，ids 支持单个
+  字符串或数组）、`activePendingCount`（未取消行数，防御式）
+- **i18n**：zh/en 字典补齐 `restart.pending*` 新 key（zh 权威，en 对齐）：
+  取消/Cancel、恢复/Restore、已取消/Cancelled、取消所选/Cancel selected、
+  恢复所选/Restore selected、已选 %s 项/%s selected、全选/Select all；
+  内嵌 CSS 补批量工具条/checkbox/行内小按钮/已取消弱化行样式（配色沿用现有
+  --dsw-alias token，明暗主题自适应）
+- package.json 版本 `0.13.0` → `0.14.0`
+
 ## [0.13.0] - 2026-10-26
 
 ### Added
