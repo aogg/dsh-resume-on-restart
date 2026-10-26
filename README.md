@@ -23,6 +23,11 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    优雅退出通道可用性与「重启后将自动恢复 N 个活跃会话」；「重启 DSH」按钮**二次确认**
    （默认焦点「取消」的确认弹窗）后才执行，重启期间轮询新实例、就绪后页面自动刷新，
    回到页面时弹「已重启」回执 toast
+- 🕒 **确认后待恢复列表与恢复结果对账**（0.13.0）：确认重启后展示「待重启恢复会话列表」
+   （会话 id + 最后活跃时间 + 运行中标记）与「已等待 N 秒」等待计时；重启完成页面刷新后，
+   同一位置原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话结算徽标
+   （已恢复/恢复失败/已被用户排除/已归档跳过/经主会话代理恢复/预算耗尽跳过/
+   无人工输入跳过/待结算——服务端结算是异步的，短轮询对账，超时未结算如实显示）
 - 🔌 **重启引擎**（0.8.0，设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)）：
    普通进程走 detach helper 的 ARM→COMMIT→ACK 握手原样拉起；**容器 PID=1 走"优雅退出 +
    容器重启策略拉起"**（见下文专节）。同一引擎同时供 `/restart` 命令与 `restart_harness`
@@ -297,7 +302,9 @@ order 62），包含三块信息与一个按钮：
 - **恢复预告**：「重启后将自动恢复 N 个活跃会话」（`GET /restart/info` 的
   `runningCandidates`，与顶栏开关同一候选口径——被顶栏排除的会话不计入恢复，
   但仍计入此处显示的候选数；0.9.0 起该计数同口径剔除已归档会话及其
-  subagent 后代，拿不到 `workspaceRegistry` 时维持现口径）
+  subagent 后代，拿不到 `workspaceRegistry` 时维持现口径；0.13.0 起候选为
+  对象明细 `[{ id, at, running, title? }]`，携带真实最后活跃时间、运行态与
+  防御式会话标题，见下方「确认后的可视化与恢复结果对账」）
 - **「重启 DSH」按钮**：点击先弹**二次确认**模态框——默认焦点在「取消」上，Esc 与
   点击遮罩都只是取消，唯一前进路径是显式点「确认重启」；确认后才 `POST /restart`
 
@@ -313,6 +320,45 @@ order 62），包含三块信息与一个按钮：
    本页继续降频等待；回到页面后若 `/restart/health` 报告 `restarted` 标记（本进程确为
    一次重启的产物且未被确认），顶部弹「已重启：……正在自动恢复」toast 并
    `POST /restart/ack` 消费，之后的刷新不再重弹
+
+### 确认后的可视化与恢复结果对账（0.13.0）
+
+「重启 DSH」按钮确认后的流程在 0.13.0 增加展示层（`/restart/health` 轮询的
+instanceId 基线判定是豁免区，一行未动）：
+
+1. **待恢复会话列表**：进入 confirm 弹窗时重新拉一次 `GET /restart/info`（列表取
+   点击时刻的最新口径）；POST `/restart` 成功进入 waiting 阶段后展示
+   「待重启恢复会话列表」——每行 = 截断会话 id（+ 防御式会话标题）+ 最后活跃
+   本地时间（at 缺失显示 —）+ `● 运行中` 标记；列表空显示「无待恢复会话」
+2. **等待计时**：waiting 阶段显示「重启中… 已等待 N 秒」（组件内 setInterval
+   每秒跳动，离开 waiting/组件卸载即清理；超时提示逻辑不变）
+3. **存根落盘**：POST 成功后把 `{ at: 确认时刻ISO, restartId?（响应里缺失则省略）,
+   candidates: [{id, at, running}] }` 覆盖写入 localStorage（key
+   `dsh-ror-pending-restore`，单条覆盖式，写入包 try/catch）；POST 失败回 idle：
+   计时器随 phase 清理、列表保留显示、按钮回到可重试态（现状行为不变）
+4. **重启后对账**：页面（重启后自动刷新）重新挂载时读存根（无则什么都不显示，
+   现状不变），`GET /restarts` 找匹配的 boot 记录——`pending.restartId` 与
+   `boot.origin.restartId` 相等优先，否则回退取 `boot.at >= pending.at - 2min`
+   时钟容差的最新一条；找到后收集该 bootAt 之后的全部 restore 记录按会话 id
+   归组，待恢复列表原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话
+   结算徽标：`resumed`=已恢复 / `failed`=恢复失败（展示 error 摘要）/
+   `excluded`=已被用户排除 / `archived`=已归档跳过 / `subagent`=经主会话代理恢复 /
+   `skipped-budget`=预算耗尽跳过 / `skipped-no-human-prompt`=无人工输入跳过 /
+   无 restore 记录=待结算
+5. **异步结算的短轮询**：服务端结算是异步的（sessionController 等待最多 30s +
+   逐候选），存在待结算会话时每 3s 轮询一次 `/restarts`、最多 20 次，全部候选
+   有结算记录即提前停止；轮询结束后仍未结算的显示「未结算」；定时器组件卸载时
+   清理。下次点「确认重启」覆盖 localStorage 存根，UI 切回 waiting 列表态
+
+服务端配套（lib/index.js）：`GET /restart/info` 的 `runningCandidates` 从
+`string[]` 升级为候选明细对象数组 `[{ id, at, running, title? }]`——真实最后活跃
+时间（回查内存 `recentSessions`，ISO 输出、未知为 ''，与 boot 记录
+`runningSessions` 同款口径）、最后已知运行态、以及经 `ctx.reflect.get('sessions')`
+防御式探测的会话标题（`record.title` / `record.header.title`，非空字符串才采纳；
+store 缺失/形状不对/抛异常一律不带该字段，绝不阻塞路由）。归档剔除 + subagent
+拆分的候选口径完全不变（`directRestorableCandidates`）。对账匹配/归组逻辑抽成
+可测纯函数（`matchPendingBoot` / `collectSettlementsBySession` 等），见
+`lib/pending-restore.test.js`。
 
 ### 重启引擎的两种模式（lib/restart.js）
 
@@ -387,6 +433,9 @@ order 62），包含三块信息与一个按钮：
 
 - `GET /api/dsh-resume-on-restart/restart/info` → `{ ok, mode, pid, instanceId,
   appExit, isContainer, restartDelayMs, pid1ExitCode, runningCandidates }`
+  （0.13.0 起 `runningCandidates` 为候选明细对象数组 `[{ id, at, running, title? }]`：
+  真实最后活跃时间 ISO（未知为 ''）、最后已知运行态、防御式会话标题；
+  0.12.x 及更早为 `string[]`）
 - `GET /api/dsh-resume-on-restart/restart/health` → `{ ok, instanceId, pid, mode,
   lifecycle, appExit[, restart: { restartId, fromInstanceId }][, restarted] }`
   （helper 就绪门控与客户端轮询共用；`restart` 身份块保留整个进程生命周期，
@@ -436,7 +485,9 @@ order 62），包含三块信息与一个按钮：
 ```bash
 # 运行单元测试（重启判定、停机归因、origin 匹配、ndjson 裁剪、排除过滤、消息构建、
 # 0.8.0 的重启引擎：模式判定/端口 pin/身份认领/helper 产物协议点/真实进程端到端、
-# 0.9.0 的归档会话过滤：gate 同款 lineage/候选剔除/回退决策/restart/info 计数口径）
+# 0.9.0 的归档会话过滤：gate 同款 lineage/候选剔除/回退决策/restart/info 计数口径、
+# 0.13.0 的确认后待恢复列表与恢复结果对账：localStorage 存根读写/boot 匹配
+# （restartId 优先 + 时间容差回退）/restore 归组/候选明细归一化）
 npm test
 ```
 
@@ -447,9 +498,12 @@ human-prompt 守卫判定、0.9.0 的归档名单归一化/lineage 判定/候选
 JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描）、
 `lib/restart.js` 中的重启引擎（模式判定、端口 pin、退出预算派生、身份认领、防重入闩、
 helper 脚本产物的关键协议点断言，以及一个**真实进程端到端**：helper 面对 COMMIT 前
-不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功）与
+不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功）、
 `lib/archive.test.js` 的归档过滤接线（mock cordis ctx：`/restart/info` 计数口径、
-候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；无 e2e、不起服务），
+候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；无 e2e、不起服务）与
+`lib/pending-restore.test.js` 的对账纯函数（桩 `window.__ModuleLoader__` 加载真实
+client bundle：localStorage 存根防御式读写、boot 匹配——restartId 相等优先/时间
+容差回退/只认 boot 记录、restore 按 id 归组、候选明细归一化含旧版 string[] 兼容），
 不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。

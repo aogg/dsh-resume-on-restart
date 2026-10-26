@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.13.0] - 2026-10-26
+
+### Added
+
+- **设置弹窗「重启」：确认后的待恢复会话列表与等待计时**（lib/client.js RestartSection）：
+  「重启 DSH」按钮进入 confirm 弹窗时重新拉一次 `GET /restart/info`（保证列表是
+  点击时刻的最新口径）；POST `/restart` 成功进入 waiting 阶段后展示
+  「待重启恢复会话列表」——每行 = 截断会话 id（+ 防御式会话标题）+ 最后活跃
+  本地时间（at 缺失显示 —）+ `● 运行中` 标记，列表空显示「无待恢复会话」；
+  waiting 阶段另显示「重启中… 已等待 N 秒」（组件内 setInterval 每秒跳动，
+  离开 waiting/组件卸载即清理；timedOut 提示逻辑不动）
+- **重启完成后的逐会话恢复结果对账**：POST `/restart` 成功后把
+  `{ at: 确认时刻ISO, restartId?, candidates: [{id,at,running}] }` 覆盖写入
+  localStorage（key `dsh-ror-pending-restore`，单条覆盖式、写入包 try/catch）；
+  页面（重启后自动刷新）重新挂载时读存根（无则什么都不显示，现状不变），
+  `GET /restarts` 匹配 boot 记录（`pending.restartId === boot.origin.restartId`
+  优先，回退 `boot.at >= pending.at - 2min` 时钟容差的最新一条），收集该 bootAt
+  之后的 restore 记录按 id 归组，待恢复列表原位变为「上次重启(<时间>)的恢复结果：
+  x/y 已恢复」+ 逐会话结算徽标（resumed=已恢复 / failed=恢复失败（error 摘要）/
+  excluded=已被用户排除 / archived=已归档跳过 / subagent=经主会话代理恢复 /
+  skipped-budget=预算耗尽跳过 / skipped-no-human-prompt=无人工输入跳过 / 无记录
+  =待结算）；服务端结算是异步的（sessionController 等待最多 30s + 逐候选），
+  存在待结算会话时每 3s 短轮询 `/restarts`、最多 20 次，全部候选有结算记录即
+  提前停止，轮询结束仍未结算的显示「未结算」；定时器组件卸载时清理。
+  POST 失败回 idle：计时器随 phase 清理、列表保留、按钮可重试（现状行为不变）。
+  下次点「确认重启」覆盖 localStorage，UI 切回 waiting 列表态。
+  对账匹配/归组逻辑抽成可测纯函数（`readPendingRestore` / `writePendingRestore` /
+  `matchPendingBoot` / `collectSettlementsBySession` / `normalizeCandidateDetails`）
+  并从 client bundle 工厂导出，`node --test` 经 `window.__ModuleLoader__` 桩加载
+  真实 bundle 后直接单测（新增 `lib/pending-restore.test.js`）
+- **i18n**：T 字典 zh/en 补齐待恢复列表、等待计时与逐会话结算徽标全部新文案
+  （zh 权威：已恢复/恢复失败/已被用户排除/已归档跳过/经主会话代理恢复/预算耗尽
+  跳过/无人工输入跳过/待结算/未结算等）
+
+### Changed
+
+- **`GET /restart/info` 的 `runningCandidates` 从 `string[]` 升级为候选明细对象数组
+  `[{ id, at, running, title? }]`**（lib/index.js）：此前
+  `.map((id) => ({ id, at: 0 }))` 把真实最后活跃时间丢了，现回查内存
+  `recentSessions` 携带真实 `at`（最后活跃毫秒时间戳 → ISO 字符串输出，未知为 ''，
+  与 boot 记录 `runningSessions` 同款口径）与最后已知运行态 `running`；
+  归档剔除 + subagent 拆分的候选口径完全不变（`directRestorableCandidates`）。
+  另防御式经 `ctx.reflect.get('sessions')` 探测会话标题（`record.title` 优先、
+  其次 `record.header.title`，非空字符串才采纳）：store 缺失/形状不对/抛异常
+  一律不带 title 字段，绝不阻塞路由
+- **测试**：`archive.test.js` 的 `/restart/info` 断言随 payload 形状更新（候选明细
+  含真实 id/at/running、归档剔除口径不变、手动停止的 `running:false` 如实透出），
+  新增 title 防御探测接线测试；新增 `lib/pending-restore.test.js`（存根读写、
+  boot 匹配、restore 归组、候选明细归一化），挂进 `npm test`
+
+### Notes
+
+- `/restart/health` 轮询的成功判定逻辑（instanceId 基线比对）是豁免区，
+  0.13.0 未动一行——本次全部是展示层与对账视图
+- `checkRestartedToast` 既有判定逻辑保持不动
+
 ## [0.12.0] - 2026-10-26
 
 ### Changed
