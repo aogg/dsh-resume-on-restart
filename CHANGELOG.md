@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.15.0] - 2026-10-27
+
+### Added
+
+- **设置弹窗「重启」：「暂停所有会话」按钮 + 暂停后的会话在任意重启后自动恢复**
+  （lib/client.js RestartSection + lib/index.js 新路由 `POST /api/dsh-resume-on-restart/pause-all`）：
+  - **一键暂停**：经 agents 服务枚举运行中会话（`status === 'running'` 且不被
+    `ignoredSessionPrefixes` 排除），逐个用 `sessionController.cancel({ sessionId })`
+    停止——「用户点停止」的同一实现，已排队的输入保留；subagent routing 持有的
+    会话跳过并结算为 subagent（不算失败，与恢复口径一致）；响应
+    `{ ok, stopped: [{id, title?}], subagent: [id], failed: [{id, error}] }`，
+    同时 `recordActivity(id, 'idle')` 立即更新内存视图与 marker
+  - **暂停集合持久化**：停止成功的会话并入 `<stateDir>/paused-sessions.json`
+    （与 excluded-sessions.json 完全同款 `{ sessions: { [id]: atISO } }`，读写归一化
+    防御风格照抄排除集合）；`enablePauseAll` 配置开关（默认开，仅显式 false 关闭）
+  - **恢复口径**：wasRestart 开机时暂停文件被一次性消费——`mergePausedCandidates`
+    把暂停条目并入恢复候选池（按 id 去重 recentSessions 优先、at 新 → 旧、
+    `restoreMax` 截断），随后照走既有排除/归档/subagent 拆分/恢复流程；**超出
+    `trackMax` 最近活跃窗口的会话同样恢复**；读取后删文件 + 清内存集合，只发生一次。
+    候选并集（`unionRestoreCandidateIds`）同时接入四处：`GET /state` 的
+    restoreCandidates、ws 快照、`/restart/info` 的 runningCandidates（at 优先
+    recentSessions 真实值，否则用暂停时刻）、开机恢复流程——顶栏开关、ws 快照、
+    重启确认列表与恢复流程全部可见暂停会话
+  - **双向互斥**：`POST /pause-all` 与 `POST /restart` 经 pauseLatch/restartLatch
+    互相检查（409 + 稳定错误文案）；同类的并发重复请求由各自闩拦截
+  - **UI 与 i18n**：「暂停所有会话」按钮位于「重启 DSH」左侧（中性 `.dsh-ror-btn`，
+    非 danger 红；仅 `info.pauseAll === false` 时隐藏，info 拿不到照常显示）；
+    二次确认弹窗复用 `.dsh-ror-modal` 系列样式（RestartConfirmDialog 泛化
+    title/body/confirmLabel/neutral props 供两处共用，默认焦点「取消」、Esc/点遮罩
+    取消）；doing 阶段两个按钮禁用 +「正在暂停…」；成功展示 formatPauseResult 摘要
+    并重拉 `/restart/info` 刷新候选计数与列表运行徽标；zh/en 字典补齐 `pause.*`
+    全部新 key（zh 权威）
+
+### Changed
+
+- **新增纯函数**（detect.js）：`unionRestoreCandidateIds`（候选 id 并集去重，ids
+  顺序在前）、`mergePausedCandidates`（picked 优先去重 + at 降序 + restoreMax
+  截断）、`selectRunningAgentIds`（running 过滤 + 忽略前缀，防御式）——全部不抛错、
+  不修改入参
+- **/restart/info 响应体新增 `pauseAll: enablePauseAll`**；cancel 通道的
+  sessionController 探测要求 resolveAgent + cancel 都存在，与恢复路径探测
+  （只要求 resolveAgent）分开实现，恢复语义零改动
+- **client 工厂新增导出 `formatPauseResult`**（暂停结果摘要文案），与上述 detect
+  纯函数一并单测（新增 `lib/pause-all.test.js`，加入 `npm test`）
+- package.json 版本 `0.14.0` → `0.15.0`
+
 ## [0.14.0] - 2026-10-26
 
 ### Added
