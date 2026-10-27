@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.16.0] - 2026-10-27
+
+### Added
+
+- **设置弹窗「重启」：进入选项卡即自动展示本次待恢复的会话列表**（lib/client.js
+  RestartSection，纯前端改动；后端与存根 schema 零改动）：
+  - **挂载即见，不再等点按钮**：section 挂载时既有的 `GET /restart/info` 拿到响应后，
+    直接经 `normalizeCandidateDetails` 构建待恢复列表并渲染（新列表来源模式
+    `pendingMode = preview`）——进入「重启」选项卡就能看到本次要待恢复的会话，
+    不必先点「重启 DSH」；空列表照旧显示「无待恢复会话」
+  - **操作能力原样可用**：preview 列表与点「重启 DSH」后的列表（confirm）共用同一
+    构建 `renderPendingList`——0.14.0 的逐行/批量「取消 / 恢复」在选项卡内直接可用
+    （取消 = 该会话重启后不自动恢复，乐观更新 + 失败回滚，取消标记只存组件本地
+    state）；「重启后将自动恢复 N 个」计数按同一行数据 `activePendingCount`
+    实时联动
+  - **既有阶段门控不破坏**：`pendingRows` 行数据语义不变（null = 列表未构建）；
+    `openConfirm` 点击时刻重拉 + `mergePendingRows` 合并口径保留——preview 阶段的
+    取消标记随合并进入 confirm，服务端不再返回的行保留并置 `cancelled=true`；
+    新增 `clickedRef` 防挂载请求晚到覆盖点击时刻已合并的列表（也不得回落
+    preview）；waiting 只读、POST 失败回 idle 列表保留，均不变
+  - **对账视图门控**：confirm 列表仍优先于重启后对账视图（0.13.0 语义不变）；
+    preview 列表**不遮蔽**对账视图——重启后的新页面（存根未覆盖前）列表与
+    「上次重启的恢复结果」两块同时渲染，列表在上
+
+### Changed
+
+- **列表来源模式 state**：RestartSection 新增 `pendingMode`（none / preview /
+  confirm）与 `clickedRef`；列表构建抽成 `renderPendingList()` 供 preview 与
+  confirm 两处共用（同一份行构建与取消/恢复能力，零行为分叉）
+- package.json 版本 `0.15.0` → `0.16.0`
+
 ## [0.15.0] - 2026-10-27
 
 ### Added
