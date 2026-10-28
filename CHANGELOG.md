@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.17.0] - 2026-10-28
+
+### Added
+
+- **恢复口径再收窄：正常结束的会话不再自动恢复**（0.10.0 口径反转曾让正常收工的
+  会话重启后也被恢复；lib/session-scan.js + lib/detect.js + lib/index.js）：
+  - **新恢复口径**：恢复候选 = 最近活跃窗口内且**最后已知状态不是「正常结束」**。
+    判定主判据用会话日志扫描（重启后日志已完整落盘，是真源；事件内存态会因崩溃
+    丢失）：最后一条真实 `turn/end` 的 `reason.kind === "completed"` → 跳过并结算
+    `result: 'skipped-completed'`（error: null，不算失败）；最后是 `turn/start`
+    无对应 `turn/end`（turn 开着被崩溃/重启打断）或最后 kind ∈ {aborted, blocked,
+    error, max-tokens, interrupted, forked, 未知 variant} → 照旧恢复；日志文件
+    不存在/解压失败/解析异常 → **保守恢复**（宁可多恢复，维持旧行为）；
+    `running:true`（重启时仍在运行）免扫描直通
+  - **新纯函数**（可单测）：`scanSessionLastTurnState` / `lastTurnStateFromText` /
+    `isTurnStartRecord` / `turnEndKindOf`（session-scan.js，复用人工输入扫描的
+    同一套文件定位与多帧 zstd 解压读取器）、`classifyCompletedRestoreGate` /
+    `filterCompletedCandidates`（detect.js）；`classifyRestoreFallback` 扩展
+    `skippedCompletedCount`——候选全部正常结束时安静收尾，不回退吵主会话
+    （与归档安静收尾同款）
+  - **接线点**：开机恢复流程在归档剔除与 subagent 拆分之后、逐个尝试之前过
+    正常结束门；`fallbackWake` 直达目标与 `escalateFallbackWake` 升级目标同样过门
+    （最后已知状态正常结束就不投递，wake.log 留痕）；0.6.0 human-prompt 守卫
+    保持不变，叠加在新门之后；boot 记录 `runningSessions` 保持如实记录（不过滤）
+  - **同步点**：`GET /state` 的 restoreCandidates（顶栏开关显示门控）、ws 快照、
+    `GET /restart/info` 的 runningCandidates（0.13.0 候选明细）都只含过滤后候选
+    ——开机对播种的 recentSessions 逐个扫描一次（memoized，恢复门复用同一结果），
+    运行期由宿主 `session/event` 事件维护（turn/end completed 加入、turn/start 与
+    其他 kind 移出、agent/status running 移出），请求路径不扫日志
+  - **记录性字段**：marker.recentSessions 条目新增 `lastTurnEndKind`（由
+    `session/event` 监听维护，随节流落盘；**仅供观测，恢复过滤绝不依赖它**——
+    崩溃会丢；旧 marker 无该字段完全兼容）
+  - **附带修复**：开机恢复流程的 `picked` 候选按 `mergePausedCandidates` 契约带上
+    `running`（此前 `pickRestoreTargets` 只回 `{id, at}`，运行态被归一化丢失——
+    0.15.0 起该字段无消费者所以无症状，0.17.0 的门需要它）
+- **设置弹窗「重启」：待恢复列表标题行新增「刷新」按钮**（lib/client.js
+  RestartSection；preview / confirm 皆可用，waiting 只读态隐藏——该阶段隐藏全部
+  按钮的既有约束不变）：点击重新 `GET /restart/info` → `normalizeCandidateDetails`
+  构建行 → `mergePendingRows` 合并（与 openConfirm 同一口径：保留本地取消标记、
+  服务端不再返回的行保留并置 `cancelled=true`）→ 同步收窄选中集合 → 更新渲染；
+  拉取中按钮禁用并显示「刷新中…」；失败静默保留现有列表（console.warn，沿用既有
+  错误处理风格）。zh/en 字典新增 `restart.pendingRefresh` / `restart.pendingRefreshing`
+- **结算徽标新增 `skipped-completed`**（对账视图「正常结束跳过」+ 重启日志 section
+  的 `restore.skipped-completed`；SETTLE_RESULTS 白名单同步扩充），zh/en 双语
+
+### Changed
+
+- package.json 版本 `0.16.0` → `0.17.0`；README 同步 0.17.0 恢复口径、候选显示
+  口径、刷新按钮与日志枚举说明
+
 ## [0.16.0] - 2026-10-27
 
 ### Added

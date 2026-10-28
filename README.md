@@ -11,10 +11,11 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 ## 特性
 
 - 🔄 **重启检测**：通过 marker 文件（记录上次 pid / 启动时间）判断是否发生重启
-- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量，0.9.1 收口，0.10.0 口径反转）：重启后自动把
-   重启前最近活跃窗口内的**全部**会话（含手动停止/正常结束的——`trackMax` 窗口说了算，
-   不看停止时是否运行中）resume 成 live agent 并投递通知（0.9.1 起逐个尝试全部候选，
-   不再"首个成功即停"）；
+- ⏭️ **会话自动恢复**（0.3.0，0.5.0 起全量，0.9.1 收口，0.10.0 口径反转，0.17.0 正常结束不恢复）：
+   重启后自动把重启前最近活跃窗口内的会话 resume 成 live agent 并投递通知
+   （0.9.1 起逐个尝试全部候选，不再"首个成功即停"）；**0.17.0 起「正常结束」的
+   会话不再恢复**（会话日志最后一条真实 turn/end `reason.kind === "completed"`，
+   由重启后的日志扫描判定——文件缺失/解压失败/解析异常一律保守恢复，宁可多恢复）；
    subagent routing 持有的子代理会话按其**主会话祖先代理恢复**（`result: 'subagent'`，不算失败）；
    依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话，
    开机无任何 live agent 时（0.9.1）升级经 sessionController 恢复最近活跃会话投递，
@@ -28,17 +29,19 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    停止结果持久化到 `<stateDir>/paused-sessions.json`；此后无论以何种方式重启
    （重启按钮 / crash / signal 都一样），被暂停的会话都会被既有自动恢复流程恢复——
    含超出 `trackMax` 最近活跃窗口的会话；暂停与重启双向互斥（同时只允许一个进行）
-- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示）：
+- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新）：
    **进入设置弹窗「重启」选项卡即自动展示「待重启恢复会话列表」**（会话标题为主、
    完整 id 悬停提示 + 最后活跃时间 + 运行中标记；逐行/批量「取消 / 恢复」在选项卡内
-   直接可用，与「重启后将自动恢复 N 个」计数同口径联动）；
+   直接可用，与「重启后将自动恢复 N 个」计数同口径联动；0.17.0 起标题行带
+   「刷新」按钮——重拉 `/restart/info` 按最新口径合并重建，保留本地取消标记，
+   拉取中禁用、失败静默保留现有列表，confirm 模式同样可用）；
    确认重启后展示同一列表（点击时刻重拉的最新口径）与「已等待 N 秒」等待计时；
    列表支持逐行与批量「取消 / 恢复」（取消 = 重启后不自动恢复，已取消行弱化显示、保留在
    列表中可撤销；waiting 阶段只读）；
    重启完成页面刷新后，
    同一位置原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话结算徽标
    （已恢复/恢复失败/已被用户排除/已归档跳过/经主会话代理恢复/预算耗尽跳过/
-   无人工输入跳过/待结算——服务端结算是异步的，短轮询对账，超时未结算如实显示）
+   无人工输入跳过/正常结束跳过/待结算——服务端结算是异步的，短轮询对账，超时未结算如实显示）
 - 🔌 **重启引擎**（0.8.0，设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)）：
    普通进程走 detach helper 的 ARM→COMMIT→ACK 握手原样拉起；**容器 PID=1 走"优雅退出 +
    容器重启策略拉起"**（见下文专节）。同一引擎同时供 `/restart` 命令与 `restart_harness`
@@ -49,12 +52,13 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    不回退吵主会话；`GET /restart/info` 的候选数同口径；registry 缺失时行为退化为现状
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
-  /skipped-no-human-prompt），上限 200 条、损坏行跳过；wake.log 保留不动
+  /skipped-no-human-prompt/0.17.0 的 skipped-completed），上限 200 条、损坏行跳过；wake.log 保留不动
 - ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
   倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
-- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转，0.11.0 状态同步改 ws 推送）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
+- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转，0.17.0 正常结束不显示，0.11.0 状态同步改 ws 推送）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
   点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
-  条目对最近活跃窗口内（会被重启恢复）的全部会话显示——含手动停止/正常结束的会话（0.10.0 起），
+  条目对最近活跃窗口内（会被重启恢复）的会话显示——0.17.0 起正常结束的会话不再
+  显示（不会被恢复）、0.10.0-0.16.x 含手动停止的会话，
   窗口外/被忽略前缀的会话不显示；候选/排除状态由宿主 websocket 快照广播实时同步
   （0.11.0 起，不再轮询），多标签页自动对齐
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
@@ -87,12 +91,24 @@ dsh plugin --profile desktop add <本目录路径>
      得出原因标签（`power-button` / `signal` / `crash` / `unknown`）后写一条 boot 记录到
      `restarts.ndjson`（随后恢复流程每结算一个候选再追加一条 restore 记录）
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
-     （优先 `recentSessions`，0.10.0 口径反转：全部有效条目都是候选——手动停止/正常结束的
-     会话同样恢复，`running` 字段不再参与过滤、仅作记录；兼容只有 `lastSessionId` 的旧 marker；
+     （优先 `recentSessions`，0.10.0 口径反转：全部有效条目都是候选——候选池不看
+     `running`、仅作记录；兼容只有 `lastSessionId` 的旧 marker；
      去重、按活跃时间新 → 旧、截断 `restoreMax`）；
      **候选先按用户排除集合过滤**（`filterExcludedCandidates`，被排除的候选记入 `wake.log` 与
      重启日志，`error: "excluded by user"`），再对剩余候选逐个尝试：已 live（`agents.get(id)`）直接投递；
      未 live 经 `sessionController.resolveAgent(id)` 恢复成 live agent 后投递。
+     **正常结束门**（0.17.0，在归档剔除与 subagent 拆分之后、逐个尝试之前）：候选
+     （`running:false` 及未知的；`running:true` 免扫描直通）逐个扫描其会话日志——
+     最后一条真实 `turn/end` 的 `reason.kind === "completed"` → 跳过并结算
+     `result: 'skipped-completed'`（不算失败）；最后是 `turn/start` 无对应 `turn/end`
+     （turn 开着被崩溃/重启打断）或最后 kind ∈ {aborted, blocked, error, max-tokens,
+     interrupted, forked, 未知 variant} → 照旧恢复；日志文件不存在/解压失败/解析异常
+     → **保守恢复**（宁可多恢复，维持旧行为）。候选全部正常结束时安静收尾，
+     不回退吵主会话；同一会话每进程只扫一次（memoized），判定结果同时喂给
+     运行期候选显示口径（`GET /state`、ws 快照、`/restart/info` 只含过滤后候选；
+     marker.recentSessions 条目顺带记录 `lastTurnEndKind` 仅供观测，**过滤不依赖它**，
+     旧 marker 无该字段完全兼容；boot 记录 runningSessions 保持如实记录不过滤）。
+     0.6.0「无真实人工输入不自动激活」守卫保持不变，叠加在新门之后（恢复循环内）。
      恢复候选前先用独立预算 `serviceWaitTimeoutMs`（0.7.0，默认 30 秒）一次性全局
      等待 `sessionController` 就绪（结果与耗时记入 `wake.log`；超时记
      `service-wait-timeout` 并跳过全部候选直接回退，不逐候选空转）；候选阶段不再
@@ -110,7 +126,8 @@ dsh plugin --profile desktop add <本目录路径>
      祖先被用户排除/已归档时不代理（尊重用户意图，安静结算）。session store 缺失
      时无法预识别（退化 = 现状），由 `resolveAgent` 的 RemoteError 在恢复循环里
      兜底结算为 `result: 'subagent'`（绝不记 failed）。
-   - **回退**：所有候选都失败/被排除（或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
+   - **回退**：所有候选都失败/被排除（0.17.0 起候选全部正常结束时不回退——安静收尾，
+     正常收工的会话无需继续；或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
      ```
      [resume-on-restart] 检测到 DSH 服务已重启。
@@ -124,12 +141,16 @@ dsh plugin --profile desktop add <本目录路径>
      `no target agent after wait`——降级通知从此没有出口）。落空后升级：等
      `sessionController` 就绪（`serviceWaitTimeoutMs` 预算），把 `lastSessionId`
      （重启前最近活跃会话；subagent 会话先上溯主会话祖先）解析成 live agent 再投递
-     ——与恢复候选同一恢复通道；尊重用户排除、归档与 human-prompt 守卫（fail-closed），
-     每一步 `wake.log` 留痕。
+     ——与恢复候选同一恢复通道；尊重用户排除、归档、0.17.0 正常结束门与 human-prompt
+     守卫（fail-closed），每一步 `wake.log` 留痕。
    - 每次投递/恢复结果都追加记录到 `wake.log`（一行一条 JSON：`deliveredTo` / `ok` / `error`）
 
 运行期间通过 `agent/status`、`agent/inbox/inserted`、`agent/assistant-stream` 事件（payload 均含 `agent`，
 `agent/status` 另带 `status`：`'running'`/`'idle'`，写进条目的 `running` 标记；其余事件沿用条目已有值）
+与 `session/event` 事件（0.17.0 起，宿主在会话日志追加时派发，监听器收到
+`(session, event)`——`turn/end` 时更新条目的记录性字段 `lastTurnEndKind` 并维护
+运行期「正常结束」集合，`turn/start` 与运行态翻转将其移出；恢复过滤的判据始终是
+重启后的日志扫描，不依赖这些内存态）
 持续记录最近活跃会话列表（同 id 去重挪到最前，上限 `trackMax`），活动时节流落盘
 （`persistThrottleMs` 内合并为一次写盘），SIGTERM/SIGINT 时兜底 flush，下次重启时用于恢复/通知。
 
@@ -175,8 +196,9 @@ fail-closed：记录文件缺失（`session-file-missing`）、运行环境 zlib
 
 web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
 里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token。显示门控：条目对恢复候选会话渲染
-——即最近活跃窗口内的会话，0.10.0 起含手动停止/正常结束的（见下方 `GET /state` 的
-`restoreCandidates`）；窗口外/被忽略前缀的会话不渲染任何 DOM：
+——即最近活跃窗口内的会话（0.10.0 起含手动停止的；0.17.0 起正常结束的会话不再是
+恢复候选、不再显示，见下方 `GET /state` 的 `restoreCandidates`）；
+窗口外/被忽略前缀的会话不渲染任何 DOM：
 
 | 状态 | 文案 | 悬停文案 | 行为 |
 |---|---|---|---|
@@ -191,6 +213,8 @@ web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conv
 
 - `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso }, restoreCandidates: { [id]: true } }`。
   `restoreCandidates` 取自宿主内存 `recentSessions` 的实时视图（纯函数 `collectRestoreCandidateIds`），
+  0.17.0 起再剔除最后已知状态为正常结束的会话（开机由日志扫描播种、运行期由
+  `session/event` 维护的集合，不在请求路径上扫日志），
   不看排除集合——被排除但仍是候选的会话仍显示灰色开关；当前会话不在其中、字段缺失或请求失败
   都按「不显示」处理
 - `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
@@ -283,7 +307,8 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
   `{ type, bootAt, id, result, error, at }`，`result` ∈ `resumed` | `failed` |
   `excluded`（用户排除）| `skipped-budget`（预算耗尽）| `skipped-no-human-prompt`
   （0.6.0 守卫拦截）| `archived`（0.9.0 归档剔除）| `subagent`（0.9.1 subagent
-  routing 持有，经主会话祖先代理恢复）；除 `failed` 外都不算失败
+  routing 持有，经主会话祖先代理恢复）| `skipped-completed`（0.17.0 正常结束门，
+  error: null）；除 `failed` 外都不算失败
 
 原因标签口径：`power-button`（有 origin，重启由 power-restart 流程发起）/ `signal`
 （有 pending-shutdown 存根或旧 marker `when`、无 origin，即 SIGTERM/SIGINT 正常停机）/
@@ -359,7 +384,7 @@ instanceId 基线判定是豁免区，一行未动）：
    `resumed`=已恢复 / `failed`=恢复失败（展示 error 摘要）/
    `excluded`=已被用户排除 / `archived`=已归档跳过 / `subagent`=经主会话代理恢复 /
    `skipped-budget`=预算耗尽跳过 / `skipped-no-human-prompt`=无人工输入跳过 /
-   无 restore 记录=待结算
+   `skipped-completed`=正常结束跳过（0.17.0）/ 无 restore 记录=待结算
 5. **异步结算的短轮询**：服务端结算是异步的（sessionController 等待最多 30s +
    逐候选），存在待结算会话时每 3s 轮询一次 `/restarts`、最多 20 次，全部候选
    有结算记录即提前停止；轮询结束后仍未结算的显示「未结算」；定时器组件卸载时
@@ -388,9 +413,16 @@ sessions.get(id), 'title')`（非空字符串才采纳），回退 `record.title
 `record.header.title`（无害防御）；`sessions.get(id)` 为 undefined 时不自造对象
 直接放弃。任何一层缺失/异常都静默降级到下一层（只 console.warn），一律不带
 title 字段，绝不阻塞路由。归档剔除 + subagent
-拆分的候选口径完全不变（`directRestorableCandidates`）。对账匹配/归组逻辑抽成
+拆分 + 0.17.0 正常结束剔除（`visibleRestoreCandidateIds`：开机日志扫描播种、运行期
+`session/event` 维护，与 `GET /state`、恢复流程同口径）的候选口径见上文。
+对账匹配/归组逻辑抽成
 可测纯函数（`matchPendingBoot` / `collectSettlementsBySession` 等），见
-`lib/pending-restore.test.js`。
+`lib/pending-restore.test.js`。0.17.0 起待恢复列表标题行带「刷新」按钮（preview /
+confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info` →
+`normalizeCandidateDetails` 构建行 → `mergePendingRows` 合并（保留本地取消标记，
+服务端不再返回的行保留并置 `cancelled=true`）→ 更新渲染；拉取中禁用并显示
+「刷新中…」，失败静默保留现有列表（`restart.pendingRefresh` / 
+`restart.pendingRefreshing` 双语文案）。
 
 ### 重启引擎的两种模式（lib/restart.js）
 
@@ -503,7 +535,7 @@ title 字段，绝不阻塞路由。归档剔除 + subagent
 | `trackMax` | `5` | 最近活跃会话列表 `recentSessions` 的长度上限 |
 | `persistThrottleMs` | `5000` | 活动时节流落盘间隔（窗口内合并为一次写盘） |
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
-| `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部候选——含手动停止/正常结束的会话，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
+| `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部候选——0.17.0 起正常结束的会话先被正常结束门剔除，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
 | `restoreTimeoutMs` | `30000` | 候选恢复阶段的总预算（ms，0.7.0 起自 `sessionController` 就绪起算，等服务不占它），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
 | `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
@@ -520,15 +552,20 @@ title 字段，绝不阻塞路由。归档剔除 + subagent
 # 0.8.0 的重启引擎：模式判定/端口 pin/身份认领/helper 产物协议点/真实进程端到端、
 # 0.9.0 的归档会话过滤：gate 同款 lineage/候选剔除/回退决策/restart/info 计数口径、
 # 0.13.0 的确认后待恢复列表与恢复结果对账：localStorage 存根读写/boot 匹配
-# （restartId 优先 + 时间容差回退）/restore 归组/候选明细归一化）
+# （restartId 优先 + 时间容差回退）/restore 归组/候选明细归一化、
+# 0.17.0 的正常结束门：turn 状态扫描/completed 跳过/异常与悬空照旧恢复/损坏保守恢复/
+# 运行中直通/候选全正常结束的安静收尾/state 与 restart/info 显示同口径/刷新按钮管线）
 npm test
 ```
 
 测试覆盖 `lib/detect.js` 中的纯函数（重启判定与检测依据、恢复候选挑选与排除过滤、
 停机归因与原因标签、origin 时间窗匹配、ndjson 解析/裁剪、信息性消息构建、0.6.0 的
-human-prompt 守卫判定、0.9.0 的归档名单归一化/lineage 判定/候选过滤/回退决策）、
+human-prompt 守卫判定、0.9.0 的归档名单归一化/lineage 判定/候选过滤/回退决策、
+0.17.0 的正常结束门判定/候选过滤/回退安静收尾）、
 `lib/session-scan.js` 中的会话记录扫描（人工输入记录判定、
-JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描）、
+JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的端到端扫描、
+0.17.0 的最后已知 turn 状态判定——completed/ended/悬空 turn/start/无 turn/损坏行、
+多帧 zstd 端到端、文件缺失/损坏的 unknown 保守口径）、
 `lib/restart.js` 中的重启引擎（模式判定、端口 pin、退出预算派生、身份认领、防重入闩、
 helper 脚本产物的关键协议点断言，以及一个**真实进程端到端**：helper 面对 COMMIT 前
 不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功）、
@@ -536,7 +573,8 @@ helper 脚本产物的关键协议点断言，以及一个**真实进程端到�
 候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；无 e2e、不起服务）与
 `lib/pending-restore.test.js` 的对账纯函数（桩 `window.__ModuleLoader__` 加载真实
 client bundle：localStorage 存根防御式读写、boot 匹配——restartId 相等优先/时间
-容差回退/只认 boot 记录、restore 按 id 归组、候选明细归一化含旧版 string[] 兼容），
+容差回退/只认 boot 记录、restore 按 id 归组、候选明细归一化含旧版 string[] 兼容、
+0.17.0 刷新按钮的数据管线与 skipped-completed 徽标白名单），
 不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。
