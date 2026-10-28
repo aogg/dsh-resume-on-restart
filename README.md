@@ -29,9 +29,11 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    停止结果持久化到 `<stateDir>/paused-sessions.json`；此后无论以何种方式重启
    （重启按钮 / crash / signal 都一样），被暂停的会话都会被既有自动恢复流程恢复——
    含超出 `trackMax` 最近活跃窗口的会话；暂停与重启双向互斥（同时只允许一个进行）
-- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新）：
+- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新，0.18.0 按工作区分组）：
    **进入设置弹窗「重启」选项卡即自动展示「待重启恢复会话列表」**（会话标题为主、
-   完整 id 悬停提示 + 最后活跃时间 + 运行中标记；逐行/批量「取消 / 恢复」在选项卡内
+   完整 id 悬停提示 + 最后活跃时间 + 运行中标记；**0.18.0 起按会话所属工作区
+   分组展示**——组头为工作区完整路径、未知工作区组恒排最后，组间/组内按最后
+   活跃时间新 → 旧；逐行/批量「取消 / 恢复」在选项卡内
    直接可用，与「重启后将自动恢复 N 个」计数同口径联动；0.17.0 起标题行带
    「刷新」按钮——重拉 `/restart/info` 按最新口径合并重建，保留本地取消标记，
    拉取中禁用、失败静默保留现有列表，confirm 模式同样可用）；
@@ -412,7 +414,15 @@ last-wins 投影），故首选 `ctx.reflect.get('sessionProjections').stateOf(
 sessions.get(id), 'title')`（非空字符串才采纳），回退 `record.title` /
 `record.header.title`（无害防御）；`sessions.get(id)` 为 undefined 时不自造对象
 直接放弃。任何一层缺失/异常都静默降级到下一层（只 console.warn），一律不带
-title 字段，绝不阻塞路由。归档剔除 + subagent
+title 字段，绝不阻塞路由。0.18.0 起明细行再加 `workspace` 字段（会话所属工作区
+= 项目目录完整路径字符串，未知为 `''`，总是携带）——宿主 `sessionWorkspaceLookup`
+每次请求一次构建 sessionId → path 映射、候选逐个查表，回退链：workspaceRegistry
+`list()` 实体的 `path` + `sessionIds`（header 验证过 canonical cwd 的官方口径）→
+只读解析 `<DSH_HOME>/storages/workspace.json`（unit v2，`tables.workspaces`，
+绝不写）→ 条目只有 path 时经 `projectKeyOf`（宿主 dsh-session-persistence-jsonl
+`projectKey` 的自写等价实现，编码有损、只能正解）与 `<DSH_HOME>/sessions`
+项目目录名精确匹配 → 都拿不到归「未知工作区」；纯展示字段，`/state`、ws 快照、
+候选过滤与恢复流程零改动。归档剔除 + subagent
 拆分 + 0.17.0 正常结束剔除（`visibleRestoreCandidateIds`：开机日志扫描播种、运行期
 `session/event` 维护，与 `GET /state`、恢复流程同口径）的候选口径见上文。
 对账匹配/归组逻辑抽成
@@ -422,7 +432,12 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 `normalizeCandidateDetails` 构建行 → `mergePendingRows` 合并（保留本地取消标记，
 服务端不再返回的行保留并置 `cancelled=true`）→ 更新渲染；拉取中禁用并显示
 「刷新中…」，失败静默保留现有列表（`restart.pendingRefresh` / 
-`restart.pendingRefreshing` 双语文案）。
+`restart.pendingRefreshing` 双语文案）。0.18.0 起行区按工作区分组渲染：纯函数
+`groupPendingRows(rows)`（工厂导出，可单测）输出有序组数组 `[{ workspace, rows }]`
+——组内按 at 倒序、组间按组内最新 at 倒序、未知工作区组恒排最后、入参不被修改；
+组头 = 工作区完整路径（缺失/空串显示「未知工作区」，zh/en
+`restart.pendingUnknownWorkspace`），组内行与既有行完全一致，批量工具条与全选
+作用于全部组的全部行，刷新按钮、结算徽标、取消弱化行行为不变。
 
 ### 重启引擎的两种模式（lib/restart.js）
 
@@ -500,6 +515,8 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
   （0.13.0 起 `runningCandidates` 为候选明细对象数组 `[{ id, at, running, title? }]`：
   真实最后活跃时间 ISO（未知为 ''）、最后已知运行态、防御式会话标题
   （session projection `session/title` 投影优先、header 回退）；
+  0.18.0 起明细行再加 `workspace`（所属工作区完整路径，未知 ''——registry 实体
+  直映射 / workspace.json 只读回退 / slug 正解匹配，客户端按它分组展示）；
   0.12.x 及更早为 `string[]`）
 - `GET /api/dsh-resume-on-restart/restart/health` → `{ ok, instanceId, pid, mode,
   lifecycle, appExit[, restart: { restartId, fromInstanceId }][, restarted] }`
@@ -554,7 +571,10 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 # 0.13.0 的确认后待恢复列表与恢复结果对账：localStorage 存根读写/boot 匹配
 # （restartId 优先 + 时间容差回退）/restore 归组/候选明细归一化、
 # 0.17.0 的正常结束门：turn 状态扫描/completed 跳过/异常与悬空照旧恢复/损坏保守恢复/
-# 运行中直通/候选全正常结束的安静收尾/state 与 restart/info 显示同口径/刷新按钮管线）
+# 运行中直通/候选全正常结束的安静收尾/state 与 restart/info 显示同口径/刷新按钮管线、
+# 0.18.0 的按工作区分组：projectKeyOf slug 编码/工作区条目归一/id→path 映射
+# （sessionIds 直映射 + slug 正解匹配）/registry→workspace.json→未知的回退链接线/
+# groupPendingRows 分组排序与未知组垫底/workspace 字段归一化与合并透传）
 npm test
 ```
 
@@ -570,11 +590,16 @@ JSONL 全文判定、记录文件定位、真实 zstd 压缩/多帧拼接下的�
 helper 脚本产物的关键协议点断言，以及一个**真实进程端到端**：helper 面对 COMMIT 前
 不出手、COMMIT 后先写身份记录再拉起、假目标以 health-timeout 收场而非假成功）、
 `lib/archive.test.js` 的归档过滤接线（mock cordis ctx：`/restart/info` 计数口径、
-候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；无 e2e、不起服务）与
+候选全归档的安静收尾、workspaceRegistry 缺失时行为不变；0.18.0 的 id → 工作区
+解析：`projectKeyOf` slug 编码、`normalizeWorkspaceEntries` 条目归一、
+`buildWorkspaceIdMap` 直映射 + slug 正解匹配、registry → workspace.json →
+未知工作区的回退链接线（探测抛异常降级、只读红线）、`/restart/info` 行带
+workspace；无 e2e、不起服务）与
 `lib/pending-restore.test.js` 的对账纯函数（桩 `window.__ModuleLoader__` 加载真实
 client bundle：localStorage 存根防御式读写、boot 匹配——restartId 相等优先/时间
 容差回退/只认 boot 记录、restore 按 id 归组、候选明细归一化含旧版 string[] 兼容、
-0.17.0 刷新按钮的数据管线与 skipped-completed 徽标白名单），
+0.17.0 刷新按钮的数据管线与 skipped-completed 徽标白名单、0.18.0 的
+`groupPendingRows` 分组排序/未知组垫底/不改入参与 workspace 字段归一化/合并透传），
 不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。

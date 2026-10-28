@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.18.0] - 2026-10-28
+
+### Added
+
+- **设置弹窗「重启」：待重启恢复会话列表按工作区分组展示**（lib/index.js +
+  lib/client.js；行内容与操作全部保留、跨组可用）：
+  - **数据链路**：`GET /restart/info` 候选明细行新增 `workspace` 字段（会话所属
+    工作区 = 项目目录完整路径字符串，未知为 `''`，总是携带）。宿主侧
+    `sessionWorkspaceLookup`（与 titleOf 同一查询路径）每次请求一次构建
+    sessionId → path 映射、候选逐个查表，绝无每候选重复 readdir——回退链：
+    1. 宿主 `workspaceRegistry.list()` 实体的 `path` + `sessionIds`（header
+       验证过 canonical cwd 的官方归属口径；0.15.0 起已用同一 registry 拿
+       archivedSessionIds）；
+    2. registry 缺失/无有效条目 → 只读解析 `<DSH_HOME>/storages/workspace.json`
+       （unit v2，`tables.workspaces`，实测条目同样带 `path` + `sessionIds`；
+       **只读参考，绝不写**）；
+    3. 条目只有 path 没有 sessionIds → 路径经 `projectKeyOf` 编码成 slug 与
+       `<DSH_HOME>/sessions` 项目目录名**正解精确匹配**（slug 形如
+       `--code-www-my-github-xxx--`，编码有损、不能反解；`projectKeyOf` 为宿主
+       dsh-session-persistence-jsonl `projectKey` 的自写等价实现——插件不 import
+       任何 `@deepseek-ai/dsh-*` 内部包，出处已注明）；
+    4. 整条链路拿不到 → `workspace: ''`，客户端归「未知工作区」组。
+    纯展示字段：`/state`、ws 快照（顶栏开关）、候选过滤与恢复流程零改动
+  - **分组纯函数** `groupPendingRows(rows)`（client.js 工厂导出，可单测）：输入
+    行数组（含 workspace），输出有序组数组 `[{ workspace, rows }]`——组内按 at
+    倒序、组间按组内最新 at 倒序、未知工作区组（workspace 缺失/空串）恒排最后；
+    返回新数组不改入参，脏行跳过、非法输入空数组，绝不抛错
+  - **分组渲染**（renderPendingList，preview / confirm / waiting 各阶段同一
+    构建）：行区按组渲染——组头一行 = 工作区完整路径（省略号截断、全文在
+    title 属性，`.dsh-ror-pending-group` 小节标题样式），workspace 缺失/空串
+    显示「未知工作区」；组内行与既有行完全一致（运行中徽标、标题、最后活跃
+    时间、已取消徽标与弱化行、行尾「取消 / 恢复」按钮）；批量工具条与全选
+    语义保持既有（作用于全部组的全部行）；空列表仍显示「无待恢复会话」；
+    标题行「刷新」按钮、waiting 只读门控、对账视图均不变。
+    zh/en 字典新增 `restart.pendingUnknownWorkspace`
+  - **合并/归一化透传**：`normalizeCandidateDetails` 对 workspace 非空字符串
+    才带（旧宿主无字段/未知 `''` 一律不带，与 title 同款「拿到才带」）；
+    `mergePendingRows` 服务端为准、服务端这轮没带回退本地旧值、服务端不再
+    返回的保留行沿本地旧值（分组跨刷新/合并保持稳定）
+
+### Changed
+
+- package.json 版本 `0.17.0` → `0.18.0`；README 同步工作区分组说明、
+  /restart/info 的 workspace 字段与 slug 回退链；既有 /restart/info 接线
+  断言统一补 `workspace: ''`（registry 与 workspace.json 全缺失的 mock 场景）
+
 ## [0.17.0] - 2026-10-28
 
 ### Added
