@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.19.0] - 2026-10-29
+
+### Added
+
+- **主动注册重启恢复**（lib/proactive-restore.js 新模块 + lib/index.js +
+  lib/client.js）：会话经模型工具/技能主动登记「重启后自动恢复」资格——即使会话
+  之后不再活跃（超出 trackMax 最近活跃窗口）甚至结束，下次 DSH 重启仍会恢复它：
+  - **持久化**：`<stateDir>/proactive-restore.json`，格式
+    `{ [sessionId]: { at: ISO 注册时间, title? } }`，上限 100 条丢最旧。
+    纯函数模块（可单测）：`normalizeProactiveRestore` / `readProactiveRestore`
+    （缺失/损坏 → `{}`）/ `writeProactiveRestore`（best-effort，失败只告警）/
+    `capProactiveRestore` / `mergeProactiveCandidatePool` / `mergeProactiveRestoreCandidates`。
+    宿主 `apply` 启动读入内存 Map（跨重启持久、**不随开机一次性消费**），变更写回
+  - **技能注册**（B）：`ctx.skills.register({ name: 'register-restart-recovery', ... })`
+    注册全局技能（agent 技能目录可见），正文指导模型调用 `register_restart_recovery`；
+    skills/tools 不在静态 inject（`['agents']`）里，经 `ctx.reflect.get` 防御式探测
+    （缺服务不阻塞、优雅降级）；注册返回的 disposer 不随 ctx 自动失效，用
+    `ctx.effect` 返回的清理函数显式挂回（同 rules-auto 模式）
+  - **模型工具**（C）：`register_restart_recovery`（`tools.register`，与
+    restart_harness 同款防御式探测 + 已注册跳过）；`execute` 读
+    `exec.agent.session.id`，add（默认，登记当前时间 + best-effort 标题）/
+    remove（取消登记），写回 proactive store，返回 `{ ok, sessionId, ... }`
+  - **/restart/info 候选池**（D）：候选明细行新增 `source`（'skill' = 主动注册，
+    'auto' = 自动候选）。候选池 = `visibleRestoreCandidateIds` 自动候选 ∪
+    主动注册候选（去重主动注册优先；主动注册命中用户排除则丢弃主动注册身份——
+    会话若同时是自动候选仍以自动候选出现；仅主动注册的会话总是出现，at = 注册
+    时间、running 回查 recentSessions（查不到 = false））。`/state`、ws 快照零改动
+  - **恢复流程**（E）：把 proactive 会话并入恢复候选池——不在 recentSessions 的以
+    `{ id, at: 注册时间 }` 形式并入，优先级 recentSessions > 暂停 > 主动注册
+    （主动注册会话如果被暂停集合覆盖，用暂停集合的 at）；主动注册条目**不受
+    restoreMax 截断**（「主动注册会话总是恢复」），尊重既有过滤（用户排除/归档/
+    human-prompt 守卫/正常结束门）；恢复成功后**只移除已成功恢复**的主动注册条目
+    （失败/被过滤的保留下次重启再试），`restoreCandidates` 返回
+    `{ restoredAny, restoredIds }` 供宿主精确清理
+  - **客户端**（F）：`normalizeCandidateDetails` 透传 `source`（非空字符串才带）；
+    `mergePendingRows` 合并 `source`（服务端为准、没带回退本地、服务端不再返回的
+    保留行沿本地）；`renderPendingRow` 对 `source === 'skill'` 显示新徽标
+    `dsh-ror-skill-badge`「技能注册」（其余维持既有运行中徽标逻辑）；设置弹窗确认
+    列表与预览列表同一 `renderPendingList`；CSS 新增 `.dsh-ror-skill-badge`（紫调，
+    与运行中绿/已取消灰区分）；zh/en 字典新增 `restart.pendingSkill`
+    （"技能注册" / "Skill registered"）
+
+### Changed
+
+- package.json 版本 `0.18.0` → `0.19.0`；test 脚本加入
+  `lib/proactive-restore.test.js`；README 同步主动注册重启恢复说明、/restart/info
+  的 source 字段与恢复流程的主动注册并入口径
+
 ## [0.18.0] - 2026-10-28
 
 ### Added

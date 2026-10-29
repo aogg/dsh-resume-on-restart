@@ -52,6 +52,15 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    自动剔除已归档会话，并按 DSH `ArchivedSessionGate` 同样的 lineage 规则剔除"归档会话的
    subagent 后代"；剔除在重启日志结算为 `archived`（不算失败），候选全是归档时保持安静、
    不回退吵主会话；`GET /restart/info` 的候选数同口径；registry 缺失时行为退化为现状
+- 📌 **主动注册重启恢复**（0.19.0）：会话经 `register_restart_recovery` 模型工具
+   （`register-restart-recovery` 技能正文指导模型调用）主动登记「重启后自动恢复」资格——
+   即使会话之后不再活跃（超出 `trackMax` 最近活跃窗口）甚至结束，下次 DSH 重启仍会恢复它。
+   资格持久化在 `<stateDir>/proactive-restore.json`（`{ [sessionId]: { at: ISO 注册时间, title? } }`，
+   上限 100 条丢最旧），跨重启持久、**只移除已成功恢复的条目**（失败保留下次重启再试）。
+   `/restart/info` 候选明细行新增 `source`（`'skill'` = 主动注册，`'auto'` = 自动候选），
+   待恢复列表对主动注册会话显示「技能注册」徽标；恢复流程把主动注册会话并入恢复候选池
+   （不受 `restoreMax` 截断——「主动注册会话总是恢复」），尊重既有过滤（用户排除/归档/
+   human-prompt 守卫/正常结束门）
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
   /skipped-no-human-prompt/0.17.0 的 skipped-completed），上限 200 条、损坏行跳过；wake.log 保留不动
@@ -422,7 +431,11 @@ title 字段，绝不阻塞路由。0.18.0 起明细行再加 `workspace` 字段
 绝不写）→ 条目只有 path 时经 `projectKeyOf`（宿主 dsh-session-persistence-jsonl
 `projectKey` 的自写等价实现，编码有损、只能正解）与 `<DSH_HOME>/sessions`
 项目目录名精确匹配 → 都拿不到归「未知工作区」；纯展示字段，`/state`、ws 快照、
-候选过滤与恢复流程零改动。归档剔除 + subagent
+候选过滤与恢复流程零改动。0.19.0 起明细行再加 `source` 字段（`'skill'` = 主动
+注册重启恢复，`'auto'` = 其余自动候选）：候选池 = `visibleRestoreCandidateIds`
+自动候选 ∪ 主动注册候选（`proactive-restore.json`——即使不在最近活跃窗口也总是
+出现，除非被用户排除；去重主动注册优先，主动注册会话的 `at` = 注册时间、
+`running` 回查 `recentSessions`（查不到 = false））。归档剔除 + subagent
 拆分 + 0.17.0 正常结束剔除（`visibleRestoreCandidateIds`：开机日志扫描播种、运行期
 `session/event` 维护，与 `GET /state`、恢复流程同口径）的候选口径见上文。
 对账匹配/归组逻辑抽成
@@ -507,6 +520,7 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 | 设置弹窗「重启」按钮 | `settings-ui` | ✅ 客户端确认弹窗 | 无因果会话，重启日志只记来源类型 |
 | `/restart` 命令 | `command` | ❌（可恢复操作） | 因果会话取发起命令的 agent |
 | `restart_harness` 模型工具 | `model-tool` | ❌ | `delayMs` 下限 1000ms（模型不能在自身 turn 结算前杀进程）、上限 `maxDelayMs`；名称与 dsh-power-button / anweat/dsh-restart 一致，先到先得，被占用即让位 |
+| `register_restart_recovery` 模型工具 | `model-tool` | ❌ | 0.19.0：登记/取消当前会话「重启后自动恢复」资格（`action` `add`=默认登记 / `remove`=取消）；`register-restart-recovery` 技能正文指导模型调用；与重启引擎无关（不触发重启） |
 
 ### 新路由（本插件前缀 + 既有围栏，`enableRestart: false` 时整体不存在）
 
@@ -517,6 +531,8 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
   （session projection `session/title` 投影优先、header 回退）；
   0.18.0 起明细行再加 `workspace`（所属工作区完整路径，未知 ''——registry 实体
   直映射 / workspace.json 只读回退 / slug 正解匹配，客户端按它分组展示）；
+   0.19.0 起明细行再加 `source`（`'skill'` = 主动注册重启恢复，`'auto'` = 其余
+   自动候选——主动注册会话即使不在最近活跃窗口也出现，除非被用户排除）；
   0.12.x 及更早为 `string[]`）
 - `GET /api/dsh-resume-on-restart/restart/health` → `{ ok, instanceId, pid, mode,
   lifecycle, appExit[, restart: { restartId, fromInstanceId }][, restarted] }`
@@ -557,7 +573,7 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 | `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
 | `enableRestart` | `true` | 0.8.0：重启引擎总开关（设置弹窗「重启」按钮、`/restart` 命令、`/restart/*` 路由）。`false` 时全部不存在，插件回到纯观测 |
-| `enableModelTool` | `true` | 0.8.0：是否注册 `restart_harness` 模型工具。设 `false` 则重启只走 GUI 按钮/命令；名称被其他插件占用时无论如何都会自动让位 |
+| `enableModelTool` | `true` | 0.8.0：是否注册 `restart_harness` 模型工具（0.19.0 起同时门控 `register_restart_recovery` 与 `register-restart-recovery` 技能）。设 `false` 则重启只走 GUI 按钮/命令；名称被其他插件占用时无论如何都会自动让位 |
 | `restartDelayMs` | `1500` | 0.8.0：HTTP 回包返回后、请求退出前的延迟（ms），给回包与会话 flush 留时间 |
 | `maxDelayMs` | `5000` | 0.8.0：模型工具 `delayMs` 参数的上限（有效下限 1000ms） |
 | `pid1ExitCode` | `0` | 0.8.0：pid1-exit 模式的退出码。`--restart=on-failure` 策略只在非 0 退出时拉起容器；`always` / `unless-stopped` 保持默认 0 即可。取值 0-255，非法回退默认 |
@@ -574,7 +590,10 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 # 运行中直通/候选全正常结束的安静收尾/state 与 restart/info 显示同口径/刷新按钮管线、
 # 0.18.0 的按工作区分组：projectKeyOf slug 编码/工作区条目归一/id→path 映射
 # （sessionIds 直映射 + slug 正解匹配）/registry→workspace.json→未知的回退链接线/
-# groupPendingRows 分组排序与未知组垫底/workspace 字段归一化与合并透传）
+# groupPendingRows 分组排序与未知组垫底/workspace 字段归一化与合并透传、
+# 0.19.0 的主动注册重启恢复：proactive-restore 读/写/裁剪/候选池合并
+# （主动注册优先去重/命中排除丢弃/总是恢复豁免 restoreMax 截断）/source 字段
+# 归一化与合并透传/技能徽标）
 npm test
 ```
 
@@ -599,7 +618,12 @@ workspace；无 e2e、不起服务）与
 client bundle：localStorage 存根防御式读写、boot 匹配——restartId 相等优先/时间
 容差回退/只认 boot 记录、restore 按 id 归组、候选明细归一化含旧版 string[] 兼容、
 0.17.0 刷新按钮的数据管线与 skipped-completed 徽标白名单、0.18.0 的
-`groupPendingRows` 分组排序/未知组垫底/不改入参与 workspace 字段归一化/合并透传），
+`groupPendingRows` 分组排序/未知组垫底/不改入参与 workspace 字段归一化/合并透传、
+0.19.0 的 source 字段归一化/合并透传/刷新管线穿透）与
+`lib/proactive-restore.test.js` 的主动注册纯函数（normalize/read/write/cap
+丢最旧、候选池合并——主动注册优先去重/命中排除丢弃主动注册身份/自动候选维持现状、
+恢复候选三列表合并——picked>paused>proactive 去重/at 降序/restoreMax 截断但主动
+注册豁免/脏输入防御/不改入参；真实临时文件读写、缺失/损坏 → {}），
 不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。
