@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.21.0] - 2026-10-31
+
+### Changed
+
+- **重启等待态可视化强化**（lib/client.js）：设置弹窗「重启」选项卡里两次确认
+  重启后的 waiting 阶段，原实现只是两段 12px 灰色小字（`.dsh-ror-restart-status`
+  的 `restart.waiting` / `restart.elapsed` 行），混在内容里要认真看才知道已进入
+  等待状态。0.21.0 起升级为一眼可见的两层提示：
+  - **醒目横幅卡片** `.dsh-ror-waiting` 紧跟 section 标题（`restart.title` 的 h4）
+    之后、note 段之前，进入 waiting 即出现、不用滚动就能看到：左侧 CSS 旋转
+    圆环 spinner（`.dsh-ror-waiting-spin`，`@keyframes dsh-ror-spin` .8s 线性
+    无限；`prefers-reduced-motion:reduce` 下 `animation:none` 尊重减弱动效偏好），
+    中间主文案区（i18n `restart.waitingTitle`「DSH 正在重启」加粗标题 +
+    `restart.waitingSub` 副文案「重启指令已确认发出，新实例就绪后本页自动刷新，
+    期间无需任何操作。」），右侧大号逐秒计时（`restart.elapsedBig`，18px 加粗蓝、
+    `font-variant-numeric:tabular-nums` 防跳动；复用既有 `elapsedSec`，计时逻辑
+    零改动）。配色沿用既有蓝调 `rgba(43,124,201,*)`（同 `.dsh-ror-reason-restart-button`），
+    文字颜色走 `--dsw-alias-label-*` 设计 token，明暗主题自适应
+  - **视口顶部固定提示条** `.dsh-ror-waiting-fixed`（position:fixed 定位写法照抄
+    既有 `.dsh-ror-toast`：top 14px 水平居中、z-index 同 10001；胶囊圆角
+    `border-radius:999px`、蓝底 `rgba(43,124,201,.95)` 白字加粗、阴影同 toast
+    风格，`max-width:min(560px,calc(100vw - 40px))` 小屏不溢出）：spinner（白调
+    覆盖）+ `restart.waiting` 文案 + 分隔的 `restart.elapsed`「已等待 N 秒」，
+    无论滚动到选项卡哪个位置都恒定可见；DOM 挂在 section 内、随条件渲染
+    离开 waiting 即消失
+  - 原两段 12px 小字 inline waiting 行删除（被横幅 + 固定条取代，不重复显示）；
+    `restart.waiting` / `restart.elapsed` 保留复用于固定条；timedOut 超时提示
+    段落保留原位置与样式；非 waiting 分支、待恢复列表、对账视图、确认/暂停
+    弹窗逻辑全部不动（横幅与固定条均为条件渲染，纯 UI 改动，宿主 half 零改动）
+
 ## [0.20.0] - 2026-10-31
 
 ### Changed
