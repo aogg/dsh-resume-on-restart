@@ -32,7 +32,7 @@
     }
   },
   "scripts": {
-    "test": "node --test lib/detect.test.js lib/session-scan.test.js lib/restart.test.js lib/archive.test.js lib/apply.test.js lib/pending-restore.test.js lib/pause-all.test.js lib/proactive-restore.test.js"
+    "test": "node --test lib/detect.test.js lib/auto-restart.test.js lib/session-scan.test.js lib/restart.test.js lib/archive.test.js lib/apply.test.js lib/pending-restore.test.js lib/pause-all.test.js lib/proactive-restore.test.js"
   },
   "engines": {
     "node": ">=18"
