@@ -65,7 +65,23 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    `/restart/info` 候选明细行新增 `source`（`'skill'` = 主动注册，`'auto'` = 自动候选），
    待恢复列表对主动注册会话显示「技能注册」徽标；恢复流程把主动注册会话并入恢复候选池
    （不受 `restoreMax` 截断——「主动注册会话总是恢复」），尊重既有过滤（用户排除/归档/
-   human-prompt 守卫/正常结束门）
+   human-prompt 守卫；0.22.0 起**正常结束门对主动注册会话放行**——用户显式要求总是恢复，
+   不再被「正常收工后才注册」拦下）
+- 🤖 **注册后守门自动重启**（0.22.0）：`register_restart_recovery` 工具 `action=add`
+   登记成功后，插件武装一次「所有会话都完成时自动触发一次 DSH 重启」的守门器——
+   **任何需要等待 DSH 重启或 agent 重启才能生效/继续的场景**（如安装/更新插件、
+   修改需重启的配置）都应调用本工具注册，注册后继续当前会话，全部会话收尾后
+   重启与恢复自动发生，无需用户手动点。「完成」口径：会话不在 `running` 即算完成，
+   **正在向用户提问等待回答（提问中）的会话也算完成**（防御式探测宿主
+   sessionProjections 投影，链路缺失/异常一律按「不在提问」保守继续等）。评估入口：
+   武装后 2s 首评 + `agent/status` 事件 ~1s 去抖评估 + 30s 兜底重估（timer 全部
+   unref）；判定全部完成后排定 `autoRestartSettleMs`（默认 10 秒）窗口再触发，
+   窗口内又出现会话干活则取消回等待。触发与重启按钮/命令/工具共用 `restartLatch`
+   防重入，`origin.kind='auto'`、重启日志 reason 标签 `auto-restart`。武装状态
+   持久化在 `<stateDir>/pending-auto-restart.json`（幂等武装保留最早时刻），只在
+   开机**一次性消费**——自动重启绝不会每次开机连环触发；`GET /restart/info` 的
+   `autoRestart: { armed, armedAt }` 可查武装状态。任何重启失败（helper 拉起失败等）
+   都不会丢武装：下一轮评估自动重试
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
   /skipped-no-human-prompt/0.17.0 的 skipped-completed），上限 200 条、损坏行跳过；wake.log 保留不动
@@ -101,11 +117,16 @@ dsh plugin --profile desktop add <本目录路径>
 1. 读取 marker 文件（`~/.dsh/.resume-on-restart/marker.json`），记录上次的 `pid` / `lastBootAt` / `startAt` / `recentSessions`
 2. 判断是否重启：当前进程 `pid` ≠ marker 的 `pid` → 判定发生重启；`pid` 相同（如容器内恒为 PID 1）则对比进程启动时间 `startAt`，偏差超过 2 秒容差 → 判定发生重启
 3. 用旧 marker 播种内存中的最近活跃列表，写入新的 marker（更新为当前 pid / 时间）
-4. 若判定为重启：
+4. **一次性消费自动重启武装文件**（0.22.0）：`<stateDir>/pending-auto-restart.json`
+   非空 = 上个进程武装过「全部会话完成后自动重启」——归因打点（`armedAt`/`by`）后
+   立刻删除，守门器不在新进程自动续期（不消费会把「等会话完成 → 重启」变成每次
+   开机再重启的死循环）；会话恢复不受影响，仍由 `proactive-restore.json` 承载、
+   照常走下面的恢复流程
+5. 若判定为重启：
    - **写 boot 记录**（0.5.0，重启日志）：先做停机归因（读 `<stateDir>/pending-shutdown.json`
      并删除；读不到回退旧 marker 的 `when` 字段；都没有 = crash）与 origin 匹配（扫描
      `~/.dsh/power-restart/*.status.json`，取 `committedAt` 落在 [上次启动, 本次启动] 的最近一条），
-     得出原因标签（`power-button` / `signal` / `crash` / `unknown`）后写一条 boot 记录到
+     得出原因标签（`restart-button` / `auto-restart`（0.22.0 守门自动重启）/ `power-button` / `signal` / `crash` / `unknown`）后写一条 boot 记录到
      `restarts.ndjson`（随后恢复流程每结算一个候选再追加一条 restore 记录）
    - **自动恢复**（`restoreSessions`，默认开）：`pickRestoreTargets(marker, restoreMax)` 取候选
      （优先 `recentSessions`，0.10.0 口径反转：全部有效条目都是候选——候选池不看
@@ -120,7 +141,10 @@ dsh plugin --profile desktop add <本目录路径>
      `result: 'skipped-completed'`（不算失败）；最后是 `turn/start` 无对应 `turn/end`
      （turn 开着被崩溃/重启打断）或最后 kind ∈ {aborted, blocked, error, max-tokens,
      interrupted, forked, 未知 variant} → 照旧恢复；日志文件不存在/解压失败/解析异常
-     → **保守恢复**（宁可多恢复，维持旧行为）。候选全部正常结束时安静收尾，
+     → **保守恢复**（宁可多恢复，维持旧行为）。**0.22.0 起主动注册的候选免扫描
+     直接放行**（`filterCompletedCandidates` 的 bypassIds）——主动注册 = 用户显式
+     要求总是恢复，绕过本门；提问中的会话 turn 开着本就放行。候选全部正常结束时
+     安静收尾，
      不回退吵主会话；同一会话每进程只扫一次（memoized），判定结果同时喂给
      运行期候选显示口径（`GET /state`、ws 快照、`/restart/info` 只含过滤后候选；
      marker.recentSessions 条目顺带记录 `lastTurnEndKind` 仅供观测，**过滤不依赖它**，
@@ -584,6 +608,7 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 | `restartDelayMs` | `1500` | 0.8.0：HTTP 回包返回后、请求退出前的延迟（ms），给回包与会话 flush 留时间 |
 | `maxDelayMs` | `5000` | 0.8.0：模型工具 `delayMs` 参数的上限（有效下限 1000ms） |
 | `pid1ExitCode` | `0` | 0.8.0：pid1-exit 模式的退出码。`--restart=on-failure` 策略只在非 0 退出时拉起容器；`always` / `unless-stopped` 保持默认 0 即可。取值 0-255，非法回退默认 |
+| `autoRestartSettleMs` | `10000` | 0.22.0：注册后守门自动重启的 settle 窗口（ms）——全部会话完成（不在 running；正在向用户提问等待回答的也算完成）→ 再等这么多毫秒才真正触发重启；窗口内评估翻回「还有会话在干活」则取消回等待。非正数/非法回退默认 |
 
 ## 开发 / 测试
 
@@ -600,7 +625,9 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 # groupPendingRows 分组排序与未知组垫底/workspace 字段归一化与合并透传、
 # 0.19.0 的主动注册重启恢复：proactive-restore 读/写/裁剪/候选池合并
 # （主动注册优先去重/命中排除丢弃/总是恢复豁免 restoreMax 截断）/source 字段
-# 归一化与合并透传/技能徽标）
+# 归一化与合并透传/技能徽标；0.22.0 规划中：auto-restart 纯函数
+# （归一化/读/写/删/幂等合并/完成判定）与 filterCompletedCandidates 的
+# bypassIds 直通（缺省向后兼容）单测由测试角色补齐）
 npm test
 ```
 

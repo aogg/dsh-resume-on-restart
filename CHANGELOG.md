@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.22.0] - 2026-10-31
+
+### Added
+
+- **注册后守门自动重启**（lib/auto-restart.js 新模块 + lib/index.js）：`register_restart_recovery`
+  工具 `action=add` 登记成功后，插件武装一次「所有会话都完成时自动触发一次 DSH
+  重启」的守门器——装完插件/更新插件/改完需重启的配置这类等待重启的工作，
+  注册后即可继续当前会话，全部会话收尾后重启与恢复自动发生，无需用户手动点：
+  - 武装状态持久化在 `<stateDir>/pending-auto-restart.json`
+    （`{ schemaVersion: 1, armedAt: 最早武装时刻, by: 最新注册者 }`），武装幂等
+    （重复注册保留最早 `armedAt`、`by` 更新为最新注册者）；`action=remove` 成功且
+    已无任何主动注册时解除（删文件 + 清守门器 timer）。武装文件只在开机
+    **一次性消费**（归因打点后删除——不消费会把「等会话完成 → 重启」变成每次
+    开机再重启的死循环）；触发路径不删武装文件，`performRestart` 失败的分支留给
+    下一轮评估重试，成功后新进程开机消费
+  - **「完成」口径**：会话不在 `running` 即算完成；**正在向用户提问等待回答
+    （提问中）的会话也算完成**——防御式探测宿主 sessionProjections 投影
+    （`stateOf(agent.session, 'userQuestions')?.questions?.active` 存在
+    `state==='continued'` 条目），链路任一层缺失/形状不对/抛异常 = 不在提问，
+    保守方向是继续等，绝不因探测失败提前重启
+  - 评估入口：武装成功后延迟 2s 首评（注册那一刻本会话必然 running，天然等待
+    一轮）；`agent/status` 事件顺带调度 ~1s 去抖评估；30s 兜底重估防事件丢失。
+    全部 timer `unref`。枚举口径与 pause-all 一致（`selectRunningAgentIds`）。
+    判定 done:false → 取消已排定的触发继续等；done:true → 排定
+    `autoRestartSettleMs`（默认 10000ms）窗口后触发，窗口内评估翻回 done:false
+    则取消回等待。触发与既有入口共用 `restartLatch` 防重入：`pauseLatch` 非空 /
+    claim 失败（已有重启在途）= 本轮放弃、武装保留
+  - 触发 `origin.kind='auto'`（lib/restart.js `ORIGIN_KINDS` 新增），boot 记录
+    reason 标签 `auto-restart`（detect.shutdownReasonOf 新识别，优先于 source
+    判定）；`GET /restart/info` 响应体新增 `autoRestart: { armed, armedAt }`
+    （排障用便宜字段，读现值；lib/client.js 不动）
+  - 新配置 `autoRestartSettleMs`（默认 10000，`toPositiveInt` 归一化；cordis.patch.yml
+    config 块同步）
+  - 提示词扩充：工具 description 与技能 `content`/`whenToUse` 明确「任何需要等待
+    DSH 重启或 agent 重启才能生效/继续的场景（如安装/更新插件、修改需重启的配置）
+    都应调用本工具注册」，技能新增「注册后的行为」小节说明守门与提问中口径、
+    使用场景追加「需等待 DSH 重启的工作」「需等待 agent 重启的工作」两条
+
+### Fixed
+
+- **主动注册的会话重启后不再被「正常结束门」拦下**（lib/detect.js +
+  lib/index.js）：`filterCompletedCandidates` 增第三参 `bypassIds`（Set/数组，
+  缺省或空 = 现行为逐字节不变，向后兼容），命中的候选免扫描直接恢复。boot 恢复
+  流程传入 `new Set(proactiveRestore.keys())`——主动注册 = 用户显式要求总是恢复
+  （0.19.0 技能承诺「即使会话结束后仍会恢复」），不再被 0.17.0「最后 turn
+  正常结束 → skipped-completed」的口径拦下导致注册承诺落空；提问中的会话 turn
+  开着本就放行，与门原语义一致
+
+### Tests
+
+- 既有 239 个用例全部通过（`filterCompletedCandidates` 既有用例全部双参调用，
+  验证缺省 `bypassIds` 的向后兼容）；0.22.0 纯函数单测（auto-restart
+  normalize/read/write/remove/merge/ classify、bypassIds 过滤、auto-restart
+  reason 标签）由测试角色补齐
+
 ## [0.21.0] - 2026-10-31
 
 ### Changed

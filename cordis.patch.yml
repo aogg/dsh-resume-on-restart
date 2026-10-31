@@ -25,3 +25,7 @@
         maxDelayMs: 5000
         # 容器 PID=1 模式的退出码：--restart=on-failure 策略需非 0 才会拉起
         pid1ExitCode: 0
+        # ---- 0.22.0：注册后守门自动重启（register_restart_recovery add 成功后武装） ----
+        # 全部会话完成（不在 running；正在向用户提问等待回答的也算完成）→ 再等
+        # 这么多毫秒才真正触发重启；窗口内评估翻回「还有会话在干活」则取消回等待
+        autoRestartSettleMs: 10000
