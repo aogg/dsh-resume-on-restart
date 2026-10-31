@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.20.0] - 2026-10-31
+
+### Changed
+
+- **移除 trackMax 恢复候选窗口限制（默认不限量）**（lib/index.js）：0.3.0 起
+  `trackMax` 默认 5，把 marker.recentSessions 截断为最近 5 条，第 6 新及更旧
+  的会话被静默挤出、重启后永远不被恢复（真实事故：2026-10-31 session-830af88f
+  因此未被恢复）。0.20.0 起默认 `trackMax = 0 = 不限`：recentSessions 不再
+  截断，历史上活跃过的会话全部保留为恢复候选；`trackMax` 配置保留向后兼容——
+  缺省/0/非法 → 不限（与 restoreMax 复用同一 `normalizeRestoreMax` 口径，
+  MAX_SAFE_INTEGER 传 pickRestoreTargets 事实全量），正整数 → 旧语义 floor 后
+  按数量截断。`restoreMax` 默认 0（不限）不变；正常结束门、restoreTimeoutMs
+  候选预算（skipped-budget 可见结算）、human-prompt 守卫、归档/排除/subagent
+  过滤全部保持不变。已知代价（用户接受）：marker.recentSessions 与 boot 记录
+  runningSessions 将随历史会话无界增长（boot 记录变长属预期）
+
+### Tests
+
+- lib/detect.test.js 新增 0.20.0 trackMax 口径用例：0（默认）/缺失/非法 →
+  不限、正整数（含小数 floor/字符串数字）→ 旧语义截断、
+  `pickRestoreTargets(marker, MAX_SAFE_INTEGER)` 全量返回不截断、
+  `pickRestoreTargets(marker, 5)` 仍取前 5 条（向后兼容）；测试注释说明与
+  index.js apply 闭包内 recordActivity 截断逻辑的对应关系（闭包内无法直测）
+
 ## [0.19.1] - 2026-10-31
 
 ### Fixed
