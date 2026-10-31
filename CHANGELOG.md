@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.19.1] - 2026-10-31
+
+### Fixed
+
+- **技能注册补 `source`**（lib/index.js）：`register-restart-recovery` 技能注册
+  新增 `source: 'runtime'`（官方 SkillSource 枚举值）——宿主 dsh-skill
+  `validateDefinition` 强制要求 `source` 为字符串，缺失导致 skill 工具加载技能
+  正文报错 `loaded skill "register-restart-recovery" source must be a string`
+
+### Changed
+
+- 技能 `invocation.userInvocable` `true` → `false`（`modelInvocable` 保持
+  `true`）：宿主 skills/list（Web 技能菜单）与用户点名注入按 `userInvocable`
+  过滤，技能仅 agent 可见可用，界面不再列出，仅模型目录与 skill 工具可用；
+  lib/apply.test.js 追加 `source` 与 `invocation` 断言锁住新契约；package.json
+  版本 `0.19.0` → `0.19.1`
+
 ## [0.19.0] - 2026-10-29
 
 ### Added
