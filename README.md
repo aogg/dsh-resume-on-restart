@@ -82,6 +82,16 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    开机**一次性消费**——自动重启绝不会每次开机连环触发；`GET /restart/info` 的
    `autoRestart: { armed, armedAt }` 可查武装状态。任何重启失败（helper 拉起失败等）
    都不会丢武装：下一轮评估自动重试
+- 🔇 **注册但不激活**（0.23.0）：`register_restart_recovery` 新增 `activate` 参数
+   （boolean，默认 true）。`activate=true`（默认/不传）行为与现状完全一致——重启后
+   自动恢复本会话并注入继续提示；`activate=false`＝「注册但不激活」——其余一切一致
+   （登记持久化、武装守门自动重启、绕过正常结束门、待恢复列表可见），唯一差别：
+   重启后本会话不自动恢复（不 resumeSession、不 deliver、不注入继续提示），重启日志
+   结算 `no-activate`（不算失败），注册条目保留（下次重启同样静默跳过，待恢复列表
+   带「注册·不激活」徽标、可手动恢复）；适合工作已收尾、只需触发重启让改动生效，
+   或不想重启后本会话抢焦点的场景。全部候选均为不激活时安静收尾不 fallbackWake
+   （不吵主会话），与其他候选混合时维持既有回退语义；`action=remove` 不区分模式
+   照旧整体取消
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
   /skipped-no-human-prompt/0.17.0 的 skipped-completed），上限 200 条、损坏行跳过；wake.log 保留不动
@@ -551,7 +561,7 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 | 设置弹窗「重启」按钮 | `settings-ui` | ✅ 客户端确认弹窗 | 无因果会话，重启日志只记来源类型 |
 | `/restart` 命令 | `command` | ❌（可恢复操作） | 因果会话取发起命令的 agent |
 | `restart_harness` 模型工具 | `model-tool` | ❌ | `delayMs` 下限 1000ms（模型不能在自身 turn 结算前杀进程）、上限 `maxDelayMs`；名称与 dsh-power-button / anweat/dsh-restart 一致，先到先得，被占用即让位 |
-| `register_restart_recovery` 模型工具 | `model-tool` | ❌ | 0.19.0：登记/取消当前会话「重启后自动恢复」资格（`action` `add`=默认登记 / `remove`=取消）；`register-restart-recovery` 技能正文指导模型调用；与重启引擎无关（不触发重启） |
+| `register_restart_recovery` 模型工具 | `model-tool` | ❌ | 0.19.0：登记/取消当前会话「重启后自动恢复」资格（`action` `add`=默认登记 / `remove`=取消，不区分模式）；0.23.0 起新增 `activate` 参数（boolean，默认 true）——`true`/不传＝重启后自动恢复本会话并注入继续提示；`false`＝注册但不激活：重启照常自动触发，但本会话不被拉起、不注入继续提示，保留在待恢复列表（带「不激活」徽标）可手动恢复；`register-restart-recovery` 技能正文指导模型调用；与重启引擎无关（不触发重启） |
 
 ### 新路由（本插件前缀 + 既有围栏，`enableRestart: false` 时整体不存在）
 

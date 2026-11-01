@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.23.0] - 2026-11-01
+
+### Added
+
+- **注册但不激活模式**（`register_restart_recovery` 新增 `activate` 参数，boolean，
+  默认 true）：`activate=true`（默认/不传）行为与现状完全一致；`activate=false`＝
+  「注册但不激活」——其余一切一致（登记持久化、武装守门自动重启、绕过正常结束门、
+  待恢复列表可见），唯一差别：重启后本会话不自动恢复（不 resumeSession、不
+  deliver、不注入继续提示），结算 `result:'no-activate'`（error:null，不算失败）；
+  注册条目保留在 proactiveRestore（下次重启同样静默跳过，待恢复列表保持带徽标、
+  可手动恢复）；适合工作已收尾、只需触发重启让改动生效，或不想重启后本会话抢
+  焦点的场景。`action=remove` 不区分模式，照旧整体取消登记
+
+### Changed
+
+- lib/proactive-restore.js：entry 新增可选 `activate` 字段——**仅在值为 false 时
+  保留落盘**（activate 为 true 或缺失一律不写该字段，旧文件字节不变）；
+  normalizeProactiveRestore / readProactiveRestore / writeProactiveRestore /
+  capProactiveRestore 实现与 docstring 同步；mergeProactiveCandidatePool 输出行
+  支持 `activate:false`（仅 false 才带，供 /restart/info 路由与客户端徽标）；
+  mergeProactiveRestoreCandidates 不变（激活开关在宿主循环查 store）
+- lib/index.js：工具 parameters 增 `activate` boolean（description 讲清两模式
+  区别与典型场景，execute 的 add 分支在 `args?.activate === false` 时给 entry 写
+  `activate:false`，返回值带 `activate` 布尔）；boot 恢复流程在候选进入
+  restoreCandidates 循环前把 `proactiveRestore.get(id)?.activate === false` 的候选
+  拆出来（参照 skippedCompleted 的处理模式：console.log + writeWakeLog +
+  appendRestartLog 结算 no-activate），不从 store 删除、不参与 restoredAny；
+  /restart/info 候选池映射输出行仅 false 才带 `activate:false`；工具 description
+  与技能 content 重写（两种模式各一段 + 典型场景 + 调用示例，保留「完成」口径与
+  remove 取消的说明）；文件头 JSDoc 补 0.23.0 说明段
+- lib/detect.js：classifyRestoreFallback 纯函数新增 `skippedNoActivateCount` 输入
+  （缺省 0 时输出与现状逐字节一致）：无可恢复候选且全部为 no-activate 结算 →
+  安静收尾不回退 fallbackWake（否则「故意不激活的重启」反而会吵醒主会话）；
+  no-activate 与其他候选混合时维持既有回退语义不变
+- lib/client.js：候选行归一化（normalizeCandidateDetails）与合并
+  （mergePendingRows）透传 `activate:false`（仅 false 才带，风格同 source，服务端
+  为准、没带回退本地旧值）；待恢复行 `source==='skill' && activate===false` 显示
+  新徽标「注册·不激活」（restart.pendingNoActivate，琥珀调
+  .dsh-ror-noactivate-badge，与紫调技能注册徽标区分）；结算徽标白名单
+  SETTLE_RESULTS 与重启日志明细行结果标签增 `no-activate`
+  （settle.no-activate / restore.no-activate，zh「注册不激活」/en「no activate」，
+  .dsh-ror-result-no-activate 新配色）；zh/en 字典补全部新 key；文件头 JSDoc 补
+  0.23.0 段落
+- README.md / package.json：功能列表与模型工具表格补 0.23.0 说明；version
+  0.23.0、description 补 0.23.0 行为一句
+
+### Tests
+
+- lib/proactive-restore.test.js：normalize 对 activate:false 保留、true/缺失/非布尔
+  不落盘、旧格式兼容；read/write 回环保留 flag（落盘文本仅 1 处 activate）；
+  cap 不丢 flag；mergeProactiveCandidatePool 输出行带 activate:false 仅限 false 条目
+- lib/detect.test.js：classifyRestoreFallback 新口径（全 no-activate → 不回退；
+  与其他候选并存且其他全失败 → 回退；不传新参 → 输出与旧一致）
+- lib/archive.test.js：宿主接线（照「候选全部正常结束 → 安静收尾」模式）——候选
+  全部 no-activate → 安静收尾、重启日志 result:'no-activate'、proactiveRestore 条目
+  保留、不 fallbackWake、/restart/info 行带 activate:false；工具注册 schema 含
+  activate 参数（execute add 按 activate 落盘与回显、remove 照旧整体取消）
+- lib/pending-restore.test.js：结算徽标白名单含 no-activate；normalizeCandidateDetails
+  / mergePendingRows 的 stub 归一化透传 activate（仅 false 参与、服务端为准回退本地）
+- `npm test`（纯 node --test，无构建）全绿：275 个用例全部通过
+
 ## [0.22.0] - 2026-10-31
 
 ### Added
