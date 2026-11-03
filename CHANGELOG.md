@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.25.0] - 2026-11-03
+
+### Added
+
+- **待恢复列表与对账视图的会话行点击跳转**（lib/client.js）：两个列表的每一行
+  都支持点击跳转到该会话——走 dsh 官方跳转方案 `uiWorkspace.openSession(sessionId)`
+  （dsh-client-ui-workspace 的 UiWorkspace 接口，官方 chat /
+  dsh-client-ui-conversation 同款用法）：工厂 `inject` 新增 `uiWorkspace`，apply
+  时经 `setUiWorkspace` 存模块级引用（防御式：非对象或缺 `openSession` 函数存
+  null）；模块级 `jumpToSession(sessionId, close)` = `openSession(sessionId)`
+  成功后回调 `close` 关闭设置弹窗（settings.section 契约 owner props 注入
+  `close`，RestartSection 签名扩展为 `{ t, close }`、可能 undefined 由
+  `jumpToSession` 防御）；任何失败只 console.warn 不抛错——跳转只是锦上添花，
+  不能让行点击炸掉设置弹窗。可点范围与约束：
+  - 待恢复列表行**非 waiting 阶段**（`pendingReadonly === false`）绑行 onClick +
+    `.dsh-ror-restore-click` 可点样式（新增 CSS，hover 提亮照抄既有
+    `--dsw-alias-bg-layer-3` 写法），行 title 在原完整 id 基础上追加跳转提示
+    （zh/en 新 key `restart.openSessionHint`：「点击打开会话」/「Click to open
+    session」）；**waiting 只读阶段不绑行点击、不加可点样式**（与该阶段隐藏全部
+    按钮的既有约束一致，保持纯展示）；
+  - 行内 checkbox 与行尾「取消 / 恢复」按钮 `onClick` `stopPropagation`，点控件
+    不误触发行跳转（原有标记/勾选逻辑不变）；批量工具条在行外，不受影响；
+  - 对账视图（「上次重启(<时间>)的恢复结果」）逐会话行同样绑 onClick 跳转 +
+    可点样式 + title 提示——只读展示、行内无控件，无 stopPropagation 需求。
+
+### Changed
+
+- **对账视图按工作区分组**（lib/client.js）：对账视图（settlement 块）的行区从
+  平铺改为复用待恢复列表既有的 `groupPendingRows` 纯函数按工作区分组——组头
+  一行复用待恢复列表同款结构与样式类（`.dsh-ror-pending-group`，workspace
+  缺失/空串显示 `restart.pendingUnknownWorkspace` 并恒垫底，组容器 title 属性
+  同款），组内行结构（结算徽标 + 标题 + error）与分组前完全一致，结算计数行
+  （x/y 已恢复）与标题不变。数据链路：`startRestart` 写 localStorage 存根的
+  candidates 增带 `workspace`（非空字符串才带，与 title 同款「拿到才带」），
+  `readPendingRestore` 归一化同步透传（非空字符串才保留）；**旧存根无该字段
+  → 不带 → 归「未知工作区」组，天然兼容**
+- package.json：version 0.24.0 → 0.25.0，description 末尾追加 0.25.0 行为一句；
+  README.md：待恢复列表与对账视图功能描述处补 0.25.0 条目与行为说明（点击跳转
+  用官方 uiWorkspace.openSession、跳转后关弹窗、waiting 只读不跳、对账视图
+  分组、存根带 workspace、旧存根兼容）
+
+### Tests
+
+- （占位，见 test 提交）本次 code 提交自检：`node --check lib/client.js` 通过；
+  `npm test` 既有 275 个用例全部通过（未改任何可导出纯函数的既有行为，
+  `readPendingRestore` 仅新增 workspace 透传，既有断言不受影响）
+
 ## [0.24.0] - 2026-11-03
 
 ### Changed

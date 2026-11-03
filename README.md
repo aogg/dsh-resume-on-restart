@@ -30,11 +30,16 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    停止结果持久化到 `<stateDir>/paused-sessions.json`；此后无论以何种方式重启
    （重启按钮 / crash / signal 都一样），被暂停的会话都会被既有自动恢复流程恢复
    （0.20.0 起最近活跃列表默认不限量，暂停会话本就在列表里）；暂停与重启双向互斥（同时只允许一个进行）
-- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新，0.18.0 按工作区分组，0.21.0 等待态可视化强化，0.24.0 对账视图不再被列表遮蔽 + 进页面即刷新）：
+- 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新，0.18.0 按工作区分组，0.21.0 等待态可视化强化，0.24.0 对账视图不再被列表遮蔽 + 进页面即刷新，0.25.0 会话行点击跳转 + 对账视图按工作区分组）：
    **进入设置弹窗「重启」选项卡即自动展示「待重启恢复会话列表」**（会话标题为主、
    完整 id 悬停提示 + 最后活跃时间 + 运行中标记；**0.18.0 起按会话所属工作区
    分组展示**——组头为工作区完整路径、未知工作区组恒排最后，组间/组内按最后
-   活跃时间新 → 旧；逐行/批量「取消 / 恢复」在选项卡内
+   活跃时间新 → 旧；**0.25.0 起每个会话行支持点击跳转**——非 waiting 阶段行容器
+   绑 onClick，走 dsh 官方 `uiWorkspace.openSession(sessionId)` 打开该会话，成功后
+   自动关闭设置弹窗，行 hover 提亮、title 追加「点击打开会话」提示；行内
+   checkbox 与行尾「取消 / 恢复」按钮已 stopPropagation，点控件不误触发跳转；
+   **waiting 只读阶段不绑行点击、不加可点样式**——该阶段连按钮都隐藏，保持纯展示；
+   逐行/批量「取消 / 恢复」在选项卡内
    直接可用，与「重启后将自动恢复 N 个」计数同口径联动；0.17.0 起标题行带
    「刷新」按钮——重拉 `/restart/info` 按最新口径合并重建，保留本地取消标记，
    拉取中禁用、失败静默保留现有列表，confirm 模式同样可用；**0.24.0 起进入
@@ -49,12 +54,16 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    还在，待恢复列表与对账视图两块堆叠展示（列表在上、对账视图在下），
    confirm/waiting/失败回 idle 各阶段都如此；
    列表支持逐行与批量「取消 / 恢复」（取消 = 重启后不自动恢复，已取消行弱化显示、保留在
-   列表中可撤销；waiting 阶段只读）；
+   列表中可撤销；waiting 阶段只读且不绑行点击跳转）；
    重启完成页面刷新后，
    同一位置原位变为「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话结算徽标
    （已恢复/恢复失败/已被用户排除/已归档跳过/经主会话代理恢复/预算耗尽跳过/
    无人工输入跳过/正常结束跳过/待结算——服务端结算是异步的，短轮询对账，超时未结算如实显示；
-   0.24.0 起它与待恢复列表并存堆叠，点「重启 DSH」也不会把它藏掉）
+   0.24.0 起它与待恢复列表并存堆叠，点「重启 DSH」也不会把它藏掉；
+   **0.25.0 起对账视图同样按工作区分组**——复用待恢复列表的同一套分组纯函数
+   与组头样式，旧存根无 workspace 字段归「未知工作区」组，天然兼容；
+   **0.25.0 起对账视图的逐会话行同样可点击跳转**到该会话并关闭设置弹窗
+   （跳转只读不改数据，无取消/恢复控件冲突））
 - 🔌 **重启引擎**（0.8.0，设计参考 [dsh-power-button](https://github.com/keyiadiannao/dsh-power-button)）：
    普通进程走 detach helper 的 ARM→COMMIT→ACK 握手原样拉起；**容器 PID=1 走"优雅退出 +
    容器重启策略拉起"**（见下文专节）。同一引擎同时供 `/restart` 命令与 `restart_harness`
@@ -416,7 +425,7 @@ order 62），包含三块信息与一个按钮：
    一次重启的产物且未被确认），顶部弹「已重启：……正在自动恢复」toast 并
    `POST /restart/ack` 消费，之后的刷新不再重弹
 
-### 确认后的可视化与恢复结果对账（0.13.0，0.14.0 扩展）
+### 确认后的可视化与恢复结果对账（0.13.0，0.14.0 扩展，0.25.0 行点击跳转 + 对账分组）
 
 「重启 DSH」按钮确认后的流程在 0.13.0 增加展示层（`/restart/health` 轮询的
 instanceId 基线判定是豁免区，一行未动）：
@@ -426,11 +435,21 @@ instanceId 基线判定是豁免区，一行未动）：
    「待重启恢复会话列表」——每行 = 会话标题为主（省略号截断、全文在元素 title
    属性悬停可见；标题缺失退回截断 id 并弱化显示）+ 最后活跃本地时间（at 缺失
    显示 —）+ `● 运行中` 标记；完整会话 id 一律放在行容器的 title 属性做悬停
-   提示，不再作为行主文本；列表空显示「无待恢复会话」
+   提示，不再作为行主文本；列表空显示「无待恢复会话」。**0.25.0 起每个会话行
+   支持点击跳转**：非 waiting 阶段行容器绑 onClick → `jumpToSession(row.id,
+   close)`——走 dsh 官方 `uiWorkspace.openSession(sessionId)` 打开该会话（客户端
+   工厂 `inject` 新增 `uiWorkspace` 服务；apply 时防御式存模块级引用，服务缺失
+   时只 console.warn 不跳），成功后回调 `close` 关闭设置弹窗（settings.section
+   owner props 注入），行加可点样式（`.dsh-ror-restore-click`，hover 提亮）、
+   行 title 在完整 id 基础上追加「点击打开会话」提示（`restart.openSessionHint`
+   双语）；任何失败只 console.warn 不抛错（跳转是锦上添花）；行内 checkbox 与
+   行尾「取消 / 恢复」按钮 `stopPropagation`，点控件不误触发跳转；
+   **waiting 只读阶段不绑行点击、不加可点样式**（该阶段隐藏全部按钮的既有约束）
 2. **等待计时**：waiting 阶段显示「重启中… 已等待 N 秒」（组件内 setInterval
    每秒跳动，离开 waiting/组件卸载即清理；超时提示逻辑不变）
 3. **存根落盘**：POST 成功后把 `{ at: 确认时刻ISO, restartId?（响应里缺失则省略）,
-   candidates: [{id, at, running, title?（空则省略）}] }` 覆盖写入 localStorage（key
+   candidates: [{id, at, running, title?（空则省略）, workspace?（非空字符串才带，
+   0.25.0 对账视图分组用）}] }` 覆盖写入 localStorage（key
    `dsh-ror-pending-restore`，单条覆盖式，写入包 try/catch）；POST 失败回 idle：
    计时器随 phase 清理、列表保留显示、按钮回到可重试态（现状行为不变）
 4. **重启后对账**：页面（重启后自动刷新）重新挂载时读存根（无则什么都不显示，
@@ -442,7 +461,15 @@ instanceId 基线判定是豁免区，一行未动）：
    `resumed`=已恢复 / `failed`=恢复失败（展示 error 摘要）/
    `excluded`=已被用户排除 / `archived`=已归档跳过 / `subagent`=经主会话代理恢复 /
    `skipped-budget`=预算耗尽跳过 / `skipped-no-human-prompt`=无人工输入跳过 /
-   `skipped-completed`=正常结束跳过（0.17.0）/ 无 restore 记录=待结算
+   `skipped-completed`=正常结束跳过（0.17.0）/ 无 restore 记录=待结算。
+   **0.25.0 起对账视图的行区同样按工作区分组**：复用待恢复列表的
+   `groupPendingRows` 纯函数与组头结构/样式（`.dsh-ror-pending-group`，workspace
+   缺失/空串显示「未知工作区」并恒垫底），组内行结构（结算徽标 + 标题 + error）
+   与分组前完全一致，结算计数行与标题不变——存根 candidates 0.25.0 起带
+   workspace（`readPendingRestore` 归一化同款「非空字符串才保留」透传），
+   **旧存根无该字段 → 不带 → 归「未知工作区」组，天然兼容**；**对账视图的逐会话
+   行同样可点击跳转**（同 `jumpToSession` → `uiWorkspace.openSession`，成功后
+   关闭设置弹窗；对账视图只读展示、行内无控件，不需要 stopPropagation）
 5. **异步结算的短轮询**：服务端结算是异步的（sessionController 等待最多 30s +
    逐候选），存在待结算会话时每 3s 轮询一次 `/restarts`、最多 20 次，全部候选
    有结算记录即提前停止；轮询结束后仍未结算的显示「未结算」；定时器组件卸载时
@@ -455,7 +482,9 @@ instanceId 基线判定是豁免区，一行未动）：
    无选中行按钮禁用）；复用既有 `POST /state`（`{ sessionId, excluded }`）每会话
    一次请求、选中行逐个串行发送，乐观更新 + 失败仅回滚对应行并 console.warn；
    已取消行弱化显示并保留在列表中（可撤销），waiting 阶段列表转只读（隐藏
-   checkbox 与全部按钮），对账视图保持只读。取消标记只存组件本地 state，不写
+   checkbox 与全部按钮，**0.25.0 起也不绑行点击跳转**），对账视图保持只读（无
+   取消/恢复控件；**0.25.0 起其行可点击跳转**，见第 4 点）。取消标记只存组件本地
+   state，不写
    localStorage 存根（candidates 仍含全部行，被取消会话重启后由服务端 restore
    记录结算为 excluded）；重开 confirm 弹窗时经 `mergePendingRows` 合并——服务端
    返回的行为准（cancelled 用本地旧值），服务端不再返回的行保留并置
@@ -505,7 +534,16 @@ confirm 皆可用，waiting 只读态隐藏）：点击重拉 `GET /restart/info
 ——组内按 at 倒序、组间按组内最新 at 倒序、未知工作区组恒排最后、入参不被修改；
 组头 = 工作区完整路径（缺失/空串显示「未知工作区」，zh/en
 `restart.pendingUnknownWorkspace`），组内行与既有行完全一致，批量工具条与全选
-作用于全部组的全部行，刷新按钮、结算徽标、取消弱化行行为不变。
+作用于全部组的全部行，刷新按钮、结算徽标、取消弱化行行为不变。**0.25.0 起
+对账视图行区同样经 `groupPendingRows` 分组**（组头结构/样式复用同一套；存根
+candidates 随 `startRestart` 写入带 workspace——非空字符串才带、与 title 同款
+「拿到才带」口径，`readPendingRestore` 归一化透传，旧存根无该字段归「未知
+工作区」组天然兼容）；并新增 `.dsh-ror-restore-click` 可点行样式（待恢复列表
+非 waiting 阶段与对账视图全部行共用，hover 提亮照抄既有 layer-3 写法）与
+`restart.openSessionHint` 双语文案（可点行容器 title 在完整 id 基础上追加的
+跳转提示）；行点击跳转 = 模块级 `jumpToSession(sessionId, close)`，客户端工厂
+`inject` 新增 `uiWorkspace` 服务（dsh-client-ui-workspace 的 UiWorkspace，
+`openSession` 打开会话成功后回调 owner props 注入的 `close` 关闭设置弹窗）。
 
 ### 重启引擎的两种模式（lib/restart.js）
 
