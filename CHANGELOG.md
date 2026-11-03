@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.24.0] - 2026-11-03
+
+### Changed
+
+- **点「重启 DSH」后不再丢失上次重启的对账视图**（lib/client.js）：对账视图
+  （「上次重启(<时间>)的恢复结果：x/y 已恢复」+ 逐会话结算徽标）的渲染门从
+  `!showConfirmList && settlement !== null` 放宽为 `settlement !== null`——
+  0.13.0 起「confirm 列表存在即不渲染对账视图」的遮蔽语义废止。0.24.0 起点下
+  「重启 DSH」进入 confirm、waiting 等待、POST 失败回 idle 各阶段，只要上一轮
+  重启的对账数据（localStorage 存根）还在，就与待恢复列表两块堆叠渲染：列表在
+  上、对账视图在下（0.16.0 preview 模式既有双块结构的推广）。存根数据链路零
+  改动——readPendingRestore / matchPendingBoot / 待结算短轮询 / startRestart
+  覆盖存根语义不变，重启完成页面刷新后由新存根展示新一轮对账仍是既有预期
+- **进入「重启 DeepSeek Harness」选项卡 = 点下待恢复列表的「刷新」按钮**
+  （lib/client.js）：挂载 effect 与 refreshPendingList 原是两条重复但不完全一致
+  的路径（挂载只在 pendingRows 为 null 时构建、不合并、不收窄选中集合、失败无
+  warn），收敛为共用同一条管线 `syncPendingFromInfo`：GET /restart/info →
+  setInfo → normalizeCandidateDetails → 本地无行直接用服务端行、有行经
+  mergePendingRows 合并（服务端为准、保留本地取消标记，服务端不再返回的行保留
+  并置 cancelled=true）→ 选中集合同步收窄（只保留仍存在的行）→ 失败静默
+  （console.warn，现有行原样保留）。进入页面现在与点刷新完全一致（同样合并旧
+  取消标记、同样收窄选中集合、失败同样留 warn 排查痕迹）。入口语义保持不变：
+  挂载路径响应到达时 clickedRef 已置位则只更新 info 不覆盖列表（setInfo 仍
+  执行）、pendingMode 仅从 none 升为 preview 绝不降级 confirm、卸载 cancelled
+  防串态；刷新按钮防重入（refreshing）、拉取中禁用并显示「刷新中…」、finally
+  复位、不改 pendingMode；openConfirm 的确认弹窗重拉保持原实现（clickedRef
+  置位、pendingMode=confirm、phase 切换不动）；waiting 只读门控、批量取消/恢复、
+  工作区分组、restart.pendingList 各文案零改动
+- package.json：version 0.23.0 → 0.24.0，description 末尾追加 0.24.0 行为一句；
+  README.md：特性列表与「确认后的可视化与恢复结果对账」小节按新行为修订（对账
+  视图不再被列表遮蔽、进入选项卡与刷新按钮同管线）
+
+### Tests
+
+- `node --check lib/client.js` 通过；`npm test`（纯 node --test，无构建）全绿：
+  275 个用例全部通过（lib/pending-restore.test.js 经 window.__ModuleLoader__ 桩
+  加载重构后的 client bundle 正常，对账/归一化/合并/分组纯函数用例全部通过；
+  无新增用例——本次为纯客户端行为与重构，未改任何可导出纯函数）
+
 ## [0.23.0] - 2026-11-01
 
 ### Added
