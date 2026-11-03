@@ -84,6 +84,17 @@
   lib/client.js 文件头 JSDoc 补 0.26.0 段；lib/unrestored.js 头部说明照
   proactive-restore.js 风格。
 
+### Tests
+
+- 新增 lib/unrestored.test.js 24 用例（接手失败子代理半成品逐行审阅后续写）：escalationDelayMs
+  续等阶梯（1..5 精确值、≥6 恒 30s 封顶、非法入参按 1、小数取整/数字字符串）、
+  normalizeUnrestored / capUnrestored / upsertUnrestored / removeUnrestoredIds 纯函数
+  全口径、readUnrestored / writeUnrestored 真实临时文件往返（缺失/损坏/写失败降级）、
+  登记→裁剪→移除组合管线；lib/pending-restore.test.js 增 6 用例：normalizeUnrestoredRows
+  归一化（合法行保留、脏行剔除、at 归 ''、可选字段非空字符串才带、非法输入 []）与
+  groupPendingRows 分组串联；package.json test 脚本纳入新文件；`npm test` 310 个用例
+  全部通过
+
 ## [0.25.0] - 2026-11-03
 
 ### Added
