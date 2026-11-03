@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.27.0] - 2026-11-04
+
+### Fixed
+
+- **fresh boot 模型工具注册被静默跳过（inject 静态声明 tools）**（lib/index.js）：
+  0.26.0 及之前 `const inject = ['agents']` 不声明 tools，而插件 fiber 常早于
+  tools 服务激活——fresh boot 时 apply 里 `ctx.reflect.get('tools')` 返回
+  undefined，restart_harness / register_restart_recovery 两处模型工具注册被
+  静默跳过、工具从不下发进主会话工具列表，只有运行期重挂（tools 恰已激活）
+  才会偶发注册成功——这正是「508 条请求 header 仅 1 条含工具」的根因。
+  0.27.0 起 inject 声明 `['agents', 'tools']`：插件 fiber 等 tools 服务激活后
+  再 apply，fresh boot 注册必成功，模型工具在主会话稳定下发；两处注册点的
+  reflect.get 防御式读取保留作双保险（缺服务不阻塞、优雅降级），跳过时补
+  console.warn 日志可见不再静默；sessionController / skills 仍不在静态
+  inject，保持运行时防御式探测。
+- package.json：version 0.26.0 → 0.27.0，description 末尾追加 0.27.0 行为一句。
+
+### Tests
+
+- 新增 lib/inject.test.js 4 用例回归守卫（直接 import 断言；lib/index.js 顶层
+  只依赖 node: 内置与同目录模块，纯 node --test 可加载）：name 恒为
+  dsh-resume-on-restart、inject 是数组且非空、含 'agents'、含 'tools'——防
+  再有人把 'tools' 删掉导致 fresh boot 工具注册静默跳过复发；package.json
+  test 脚本纳入新文件；`npm test` 314 个用例全部通过
+
 ## [0.26.0] - 2026-11-03
 
 ### Added
