@@ -43,9 +43,12 @@
 
 ### Tests
 
-- （占位，见 test 提交）本次 code 提交自检：`node --check lib/client.js` 通过；
-  `npm test` 既有 275 个用例全部通过（未改任何可导出纯函数的既有行为，
-  `readPendingRestore` 仅新增 workspace 透传，既有断言不受影响）
+- 新增 lib/pending-restore.test.js 5 用例：readPendingRestore 存根 candidates 的
+  workspace 非空字符串才保留（数字/对象/空串一律不带 key）、旧存根无该字段回归
+  兼容、writePendingRestore → readPendingRestore 含/不含 workspace（含 restartId
+  与 title）覆盖式往返一致、candidates 直接喂 groupPendingRows 的分组串联（带
+  workspace 进对应组、无 workspace 归 '' 未知组恒垫底）；`npm test` 280 个用例
+  全部通过
 
 ## [0.24.0] - 2026-11-03
 
