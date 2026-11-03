@@ -17,6 +17,9 @@
         restoreMax: 0
         restoreTimeoutMs: 30000
         serviceWaitTimeoutMs: 30000
+        # ---- 0.26.0：快等超时后的后台续等总预算（逐级递增间隔 2s~30s 封顶轮询，
+        # 就绪即补跑候选循环；耗尽才放弃并登记「上次重启无法恢复」列表可手动恢复）
+        serviceWaitMaxMs: 600000
         requireHumanPrompt: true
         # ---- 0.8.0：重启引擎（设置弹窗「重启」按钮 + /restart 命令 + restart_harness 工具） ----
         enableRestart: true

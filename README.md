@@ -72,6 +72,15 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    自动剔除已归档会话，并按 DSH `ArchivedSessionGate` 同样的 lineage 规则剔除"归档会话的
    subagent 后代"；剔除在重启日志结算为 `archived`（不算失败），候选全是归档时保持安静、
    不回退吵主会话；`GET /restart/info` 的候选数同口径；registry 缺失时行为退化为现状
+- 🔁 **服务等待超时的逐级递增续等与「上次重启无法恢复」列表**（0.26.0）：快等
+   `sessionController` 就绪（默认 30s）超时不再整批放弃全部恢复候选——先照旧立即
+   回退通知主会话，同时后台按逐级递增间隔（2s/4s/8s/16s/30s 封顶）续等，总预算
+   `serviceWaitMaxMs`（默认 10 分钟）内服务就绪即补跑候选循环（同一实现：守卫、
+   预算、簿记、store 清理全部一致；按会话 id 去重，不与 fallback 重复投递；等待
+   期间被排除/已正常结束的候选按门既有口径结算）；续等也到上限才放弃——剩余候选
+   逐条结算「等待超时」并登记「上次重启无法恢复」store（`<stateDir>/unrestored.json`，
+   cap 100 条新在前），设置弹窗「重启」section 待恢复列表之后新增第三块列表
+   （按工作区分组、行点击跳转、行级/批量手动恢复，恢复成功自动从 store 移除）
 - 📌 **主动注册重启恢复**（0.19.0）：会话经 `register_restart_recovery` 模型工具
    （`register-restart-recovery` 技能正文指导模型调用）主动登记「重启后自动恢复」资格——
    即使会话之后不再活跃甚至结束，下次 DSH 重启仍会恢复它。
@@ -492,6 +501,21 @@ instanceId 基线判定是豁免区，一行未动）：
    存在时按未取消行数实时显示（`activePendingCount`）。合并/标记/计数均为可测
    纯函数（`mergePendingRows` / `setPendingCancelled` / `activePendingCount`），
    从 client bundle 工厂导出
+7. **「上次重启无法恢复」列表（0.26.0）**：待恢复列表之后、对账视图之前的第三块
+   （仅非空渲染；三块堆叠：列表在上、无法恢复居中、对账在下）。宿主快等
+   `sessionController` 超时后先照旧回退 fallbackWake，同时后台按逐级递增间隔
+   续等（总预算 `serviceWaitMaxMs`）：就绪即补跑候选循环（按 id 去重不重复投递）；
+   续等也到上限才放弃——剩余候选逐条结算「等待超时」并登记
+   `<stateDir>/unrestored.json`（cap 100 条新在前，同 id 更新不新增）。本列表
+   行结构与待恢复列表一致：按工作区分组（同一 `groupPendingRows`，未知工作区
+   垫底）、行首「等待超时」结算徽标（新配色类
+   `.dsh-ror-result-skipped-service-timeout`）、会话标题、登记时间，行可点击
+   跳转（同 `jumpToSession`）；行尾「恢复」按钮 + 全选/「恢复所选」批量工具条
+   （复用 0.14.0 同款 key 与样式），串行逐个 `POST /unrestored/restore`、乐观
+   移除行、失败 console.warn 保留行、在途集合防重复点击；点「刷新」与待恢复
+   列表一并重拉（挂载同理，404 = 混合版本窗口静默不显示）。恢复成功（自动恢复
+   /续等补跑/手动恢复）时 store 内同 id 条目自动移除，列表随之消失；对账视图
+   出现 `skipped-service-timeout` 结算同样显示该徽标
 
 服务端配套（lib/index.js）：`GET /restart/info` 的 `runningCandidates` 从
 `string[]` 升级为候选明细对象数组 `[{ id, at, running, title? }]`——真实最后活跃
@@ -634,6 +658,8 @@ candidates 随 `startRestart` 写入带 workspace——非空字符串才带、�
 - `POST /api/dsh-resume-on-restart/restart` → `{ ok, mode, restartId, note }`（409 =
   已有重启进行中）
 - `POST /api/dsh-resume-on-restart/restart/ack` → 消费 toast 标记
+- `GET /api/dsh-resume-on-restart/unrestored` → `{ ok, rows: [{ id, at, bootAt?, title?, workspace?, error? }] }`（0.26.0：「上次重启无法恢复」只读列表，store 倒序、空 → rows: []；`enableRestart: false` 时不存在）
+- `POST /api/dsh-resume-on-restart/unrestored/restore` → `{ ok }`（0.26.0：手动恢复一条，body `{ sessionId }`；等服务就绪（≤ `serviceWaitTimeoutMs`）后按候选循环同款恢复并投递继续提示，会话已活跃则不重复投递直接成功；成功从 store 移除该条并写 `resumed` 结算；失败 `{ ok:false, error }` 响应风格照 `POST /state`）
 
 ## Docker / PID 1 容器支持
 
@@ -663,7 +689,8 @@ candidates 随 `startRestart` 写入带 workspace——非空字符串才带、�
 | `restoreSessions` | `true` | 重启后是否自动恢复重启前活跃的会话 |
 | `restoreMax` | `0` | 最多恢复的会话数；`0` = 不限（遍历全部候选——0.17.0 起正常结束的会话先被正常结束门剔除，仍尊重排除名单与 `ignoredSessionPrefixes`），正整数 = 按活跃时间新 → 旧取前 N 个 |
 | `restoreTimeoutMs` | `30000` | 候选恢复阶段的总预算（ms，0.7.0 起自 `sessionController` 就绪起算，等服务不占它），按候选数平摊、每候选最低 5 秒；超出预算的候选记 `skipped-budget`，全部候选失败/超预算后回退通知主会话 |
-| `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话 |
+| `serviceWaitTimeoutMs` | `30000` | 0.7.0：候选恢复前全局等待 `sessionController` 就绪的独立预算（ms，轮询间隔 500ms），结果与耗时记入 `wake.log`；超时记 `service-wait-timeout` 并跳过全部候选直接回退通知主会话（0.26.0 起同时起后台续等任务，不再就此放弃） |
+| `serviceWaitMaxMs` | `600000` | 0.26.0：快等超时后的后台续等总预算（ms）——续等按逐级递增间隔（2s/4s/8s/16s/30s 封顶）轮询，就绪即补跑候选循环（按 id 去重不与 fallback 重复投递）；到本预算仍不就绪才放弃，剩余候选逐条结算「等待超时」并登记「上次重启无法恢复」store 可手动恢复。非法/非正数回退默认 |
 | `requireHumanPrompt` | `true` | 0.6.0：投递前是否要求目标会话有过真实人工输入（恢复候选与 fallback 回退都生效）；没有或扫描失败（fail-closed）就跳过投递并记日志，`false` 关闭守卫（完全旧行为） |
 | `enableRestart` | `true` | 0.8.0：重启引擎总开关（设置弹窗「重启」按钮、`/restart` 命令、`/restart/*` 路由）。`false` 时全部不存在，插件回到纯观测 |
 | `enableModelTool` | `true` | 0.8.0：是否注册 `restart_harness` 模型工具（0.19.0 起同时门控 `register_restart_recovery` 与 `register-restart-recovery` 技能）。设 `false` 则重启只走 GUI 按钮/命令；名称被其他插件占用时无论如何都会自动让位 |

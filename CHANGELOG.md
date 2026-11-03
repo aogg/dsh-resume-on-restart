@@ -1,5 +1,81 @@
 # Changelog
 
+## [0.26.0] - 2026-11-03
+
+### Added
+
+- **服务等待超时后的逐级递增续等**（lib/index.js，四层方案的核心层）：0.7.0 起
+  restoreCandidates 进入候选循环前用 serviceWaitTimeoutMs（默认 30s）一次性快等
+  sessionController，超时即 `skip all restore candidates` 整批放弃（连逐条 restore
+  结算都没有）。真实事故：2026-11-03 boot 服务约 50-70s 才就绪，2 个运行中候选被
+  静默丢弃、fallbackWake 只唤醒了最近活跃的 1 个会话。0.26.0 起超时不再就此结束：
+  - 快速层不变：快等超时保持既有返回值 `{ restoredAny: false }`，fallbackWake
+    照旧立即执行；
+  - 续等层（新增）：快等超时起后台续等任务，按 `escalationDelayMs(attempt)` 逐级
+    递增间隔轮询（`= min(2000 * 2^(attempt-1), 30000)`：2s/4s/8s/16s/30s 封顶，
+    纯函数导出供单测），总预算新配置 `serviceWaitMaxMs`（默认 600000 = 10 分钟，
+    cordis.patch.yml config 同步新增、toPositiveInt 读取照 serviceWaitTimeoutMs
+    同款）；就绪后**补跑候选循环**——与正常路径同一实现（restoreCandidates 复用：
+    requireHumanPrompt 守卫、restoreTimeoutMs 预算、appendRestartLog 簿记、
+    proactive/unrestored store 清理全部一致，不新造逻辑），补跑前按既有口径重过
+    用户排除集合与正常结束门（等待期间被排除/已正常结束的候选按门既有口径结算，
+    不强造 resumed），并**按会话 id 去重**：fallbackWake 已投递的会话（deliver
+    成功即登记的 deliveredTo 集合）跳过不重复投递；补跑成功照常写 resumed 结算
+    与既有簿记，wake.log 记一条含 deferred restore 与实际等待时长的说明；
+    防重入（同一 boot 只起一个任务、无 running 候选不起），定时器随插件
+    dispose 清理；
+  - 兜底可见层（新增）：续等也到 serviceWaitMaxMs 上限才放弃——对每个剩余候选
+    （fallback 已投递的除外）逐条结算 `result: 'skipped-service-timeout'`
+    （error 注明 sessionController not ready within serviceWaitMaxMs）写
+    restarts.ndjson + wake.log，并逐条登记「上次重启无法恢复」store。
+- **「上次重启无法恢复」store 与手动恢复路由**（lib/unrestored.js + lib/index.js）：
+  - 新模块 lib/unrestored.js（风格照 lib/proactive-restore.js）：readUnrestored /
+    writeUnrestored / normalizeUnrestored / capUnrestored 纯函数导出（另附
+    upsertUnrestored / removeUnrestoredIds 两个纯函数供登记与移除接线）；
+    文件 `<stateDir>/unrestored.json`，条目 `{ id, at（登记时刻ISO）, bootAt?,
+    title?, workspace?, error? }`；cap 100 条、新在前；同 id 重复登记 = 原位更新
+    不新增；恢复成功某会话（正常路径 / 续等补跑 / 手动恢复）时 store 内同 id
+    条目自动移除；
+  - 新路由（enableRestart 门控、围栏与注册写法照既有 /state、/pause-all）：
+    `GET /api/dsh-resume-on-restart/unrestored` → `{ ok:true, rows:[...] }`
+    （store 倒序，空 → rows: []）；`POST /api/dsh-resume-on-restart/unrestored/
+    restore`（body `{sessionId}`）手动恢复——等服务就绪（≤ serviceWaitTimeoutMs，
+    同一 waitForSessionController）后按候选循环同款恢复该会话（resumeSession +
+    deliver 投递继续提示；会话已活跃则不重复投递直接按成功处理）；成功 →
+    `{ok:true}` + store 移除该条 + restarts.ndjson 记 restore 行
+    `result:'resumed'`（error:null）+ wake.log；失败 → `{ok:false,error}`
+    （响应风格照 POST /state）。
+- **设置弹窗「重启」section 新增第三块「上次重启无法恢复」列表**（lib/client.js）：
+  挂载 GET /unrestored（404 = 混合版本窗口 → 静默不显示，照 /restarts 404 口径）；
+  refreshPendingList 点「刷新」时一并重拉；仅 rows 非空渲染，位置在待恢复列表
+  之后、对账视图之前；行结构与另两个列表一致——可点行（jumpToSession(row.id,
+  close) + .dsh-ror-restore-click + title 追加 restart.openSessionHint）、行首
+  结算徽标（新 key `restore.skipped-service-timeout`，zh「等待超时」/en "timeout"，
+  新 CSS 类 .dsh-ror-result-skipped-service-timeout 青灰蓝调）、会话标题、登记
+  时间、行尾「恢复」按钮（复用 restart.pendingRestore）；**按工作区分组**（复用
+  groupPendingRows，组头结构与样式同待恢复列表，未知工作区垫底）；批量工具条照
+  0.14.0 模式：全选 checkbox（半选）+「已选 N 项」（复用 key）+「恢复所选」
+  （复用 restart.pendingRestoreSelected）；串行逐个 POST /unrestored/restore，
+  乐观更新（成功移除行）+ 失败 console.warn 保留行，行级/批量在途集合
+  （unrestoredMutatingIds）防重复点击；新增纯函数 normalizeUnrestoredRows
+  （工厂导出供单测）。
+
+### Changed
+
+- **服务等待超时不再整批放弃**（lib/index.js）：restoreCandidates 超时路径保持
+  返回 `{ restoredAny:false }`（fallbackWake 照旧）的同时起续等任务；候选循环内
+  恢复成功即从「无法恢复」store 自动移除同 id 条目（正常路径与续等补跑共用
+  restoreCandidates 收尾，一处实现两路径同口径）；对账视图结算徽标白名单
+  SETTLE_RESULTS 增 `skipped-service-timeout`（对账视图出现该结算同样有徽标，
+  settle.skipped-service-timeout 同配色）；withTimeout / sessionController 探测
+  与等待 / resumeSession / deliver 自 agents effect 上移 apply 层（续等补跑与
+  手动恢复路由与候选循环共用同一实现，逻辑逐字未动）。
+- package.json：version 0.25.0 → 0.26.0，description 末尾追加 0.26.0 行为一句；
+  README.md：功能列表新增「续等与无法恢复列表」条目、配置表增 serviceWaitMaxMs
+  行、「确认后的可视化与恢复结果对账」小节补第三列表说明；lib/index.js 与
+  lib/client.js 文件头 JSDoc 补 0.26.0 段；lib/unrestored.js 头部说明照
+  proactive-restore.js 风格。
+
 ## [0.25.0] - 2026-11-03
 
 ### Added
