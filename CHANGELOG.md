@@ -70,6 +70,14 @@
   settle.skipped-service-timeout 同配色）；withTimeout / sessionController 探测
   与等待 / resumeSession / deliver 自 agents effect 上移 apply 层（续等补跑与
   手动恢复路由与候选循环共用同一实现，逻辑逐字未动）。
+- **fallback 投递按 deliveredTo 防重**（lib/index.js）：续等补跑与 fallbackWake
+  之间存在并发窗口——服务恰在 fallback 等待/轮询进行中就绪时，续等补跑可能先
+  恢复并投递某候选（含最后活跃会话），fallback 随后仍会向同一会话重复投递继续
+  提示（补跑侧的 deliveredTo 去重只覆盖「fallback 先、补跑后」方向）。fallback
+  两处投递点（roots 即时命中与轮询命中）与 escalateFallbackWake 升级投递前同样
+  查 deliveredTo（新增第三道门 passesDeliveredGate）：已登记过的不重复投递，
+  wake.log 记 `fallback wake skipped: already delivered (deferred restore)` +
+  console.log（本条并入 0.26.0：随本次发布部署，未单独发版）。
 - package.json：version 0.25.0 → 0.26.0，description 末尾追加 0.26.0 行为一句；
   README.md：功能列表新增「续等与无法恢复列表」条目、配置表增 serviceWaitMaxMs
   行、「确认后的可视化与恢复结果对账」小节补第三列表说明；lib/index.js 与
