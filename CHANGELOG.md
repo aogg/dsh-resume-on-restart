@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.27.2] - 2026-11-06
+
+### Fixed
+
+- **注册恢复与立即重启两组提示词互相区分**（lib/index.js，三处纯文案，不改任何逻辑）：
+  插件有两类重启入口——register_restart_recovery 模型工具 / register-restart-recovery
+  技能是「注册恢复资格：等**所有会话完成后**才自动触发一次重启」，restart_harness
+  模型工具是「立即重启（不等会话收尾）」——此前的工具 description / 技能提示词
+  没有把两者语义对照讲清，模型可能把「注册」误当成「立即重启」。本次：
+  - register_restart_recovery 工具 description 末尾补「不是立即重启」区分句，
+    并指明需要立即重启时用 restart_harness 工具或 GUI「重启 DSH」按钮，两者
+    可配合（先注册恢复资格再立即重启）。
+  - register-restart-recovery 技能：whenToUse 末尾补「需要立即重启、不等会话
+    收尾的场景用 restart_harness 工具，不要用本技能」；content「注册后的行为」
+    一节末尾新增「与立即重启的区分」小段（等所有会话完成 ≠ 立即重启，可与
+    restart_harness / GUI「重启 DSH」/ /restart 配合）。
+  - restart_harness 工具 description 末尾反向补一句：要「等所有会话完成后自动
+    重启并恢复指定会话」时改用 register_restart_recovery 登记，而不是本工具。
+
 ## [0.27.1] - 2026-11-06
 
 ### Changed
