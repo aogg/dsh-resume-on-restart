@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.28.0] - 2026-11-06
+
+### Changed
+
+- **设置弹窗「重启日志」与「重启」合并为单个条目内的两个 tab**（lib/client.js，纯
+  UI 结构合并，「重启日志」功能无任何行为变化）：
+  - 原先两个独立的 settings.section 条目（0.5.0 起 order 61「重启日志」、0.8.0 起
+    order 62「重启」）主题重复、设置弹窗左侧出现两个相近入口；0.28.0 起只注册一个
+    条目「重启」（label 复用既有 restart.nav；id 保留 resume-on-restart、order 61
+    不变，原 restart-now 条目移除）。
+  - 新外层组件 RestartTabsSection 持有本地 tab state（useState，默认 restart），
+    tab 栏（新类名 .dsh-ror-tabs / .dsh-ror-tab / .dsh-ror-tab-active：设计 token
+    取值照抄 .dsh-ror-btn / .dsh-ror-refresh，选中态蓝调强调照抄 .dsh-ror-waiting
+    的 rgba(43,124,201,*) 用色口径，明暗主题自适应；role=tablist/tab +
+    aria-selected）切换两块内容：tab1「重启」= 原 RestartSection 全部内容与行为
+    （默认选中）；tab2「重启日志」= 原 RestartLogSection 全部内容与行为（404
+    容错、加载失败报错态、结算徽标全部原样保留）。
+  - 切换按 tab 条件渲染其中一块，与原先设置弹窗左侧导航二选一的挂载语义一致；
+    两组件内部逻辑/state/定时器/清理函数零改动，只在最外面包了一层 tab（两块
+    各自的根 div.dsh-ror-settings 不动，外壳不额外包 padding）。
+  - i18n 新增 restart.tabRestart / restart.tabLog（zh/en）；settings.nav 字典项
+    保留但不再被引用（顶部 label 改用 restart.nav）。
+- package.json：version 0.27.2 → 0.28.0（顶层 description 字段不动）。
+
 ## [0.27.2] - 2026-11-06
 
 ### Fixed
