@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.31.0] - 2026-11-06
+
+### Added
+
+- **登记调用留痕与重启周期统计**（lib/register-calls.js 独立模块 + lib/index.js）：
+  - 新 ndjson 文件 `<stateDir>/register-calls.ndjson`（上限 200 条超出丢最旧、
+    重写顺带剔除损坏行，照 restarts.ndjson 写入器同款模式与容错口径）：
+    `register_restart_recovery` 工具 **action=add 成功**时追加
+    `{ at, sessionId, activate? }`（`activate` 仅显式 false 时写入；remove
+    不记录）。写失败只 console.warn，绝不影响登记与自动重启流程。
+  - 每次写 boot 记录时补算并落 4 个新字段（历史条目不回填，前端对缺失字段
+    显示「—」）：
+    - `registrationFirstAt` / `registrationFirstSessionId`：本重启周期
+      `[prevBootAt, origin.requestedAt]`（**两端闭区间**）内第一条 add 记录的
+      时刻 / 会话 id（纯函数 `cycleRegistrations` 统计；无记录缺省不写）；
+    - `registrationCount`：同周期内 add 记录条数（恒写数字，无记录为 0）；
+    - `restartMs`：本次 boot 时刻 − `origin.requestedAt` 毫秒（重启发起时刻
+      缺失/不可解析/晚于 boot 时缺省不写）。
+  - 周期统计的纯函数放在 lib/register-calls.js（`cycleRegistrations`），边界
+    不可解析时该侧按无边界处理（crash 等无 origin 的周期仍可统计）；
+    `GET /restarts` 原样返回条目数组，新字段自然带出、旧条目形状不变。
+
+### Changed
+
+- **设置弹窗 tab2「重启日志」由行列表改为表格，并消除「停机」文案歧义**
+  （lib/client.js RestartLogSection）：
+  - 列顺序固定（表头固定文案 zh/en 成组补齐）：「记录时间」（最左，记录
+    `at`）/「触发」/「来源」/「首次登记」/「登记次数」/「触发时刻」/
+    「重启耗时」/「距上次重启」/「恢复结果」。触发文案：auto-restart →
+    「自动重启（所有会话完成）」、settings-ui →「手动按钮」、model-tool →
+    「模型工具」，其余沿用既有 reason.* 字典（未命中原样）；来源：origin.kind
+    的 auto →「自动」、model-tool →「会话 <短id>」、settings-ui →「设置界面」，
+    其余保持 kind + 短 id。
+  - **原「停机 2h 46m」文案废止**：`downtimeMs` 的口径是「上次重启完成到本次
+    重启完成的间隔（含正常运行时间）」，不是停机时长——列名改为「距上次
+    重启」，title 明写口径；旧 i18n key `label.downtime` 一并删除（zh/en）。
+  - 「登记次数」列 title 提示「本重启周期内 register_restart_recovery 调用
+    次数」；「重启耗时」用 `humanizeMs` 格式化为「13s」「1m 5s」「2h 46m」。
+  - 展开明细行为保留（行可点、可键盘 Enter/Space 展开，明细整行跨列，明细
+    内同口径补齐新字段）；空态 / 404 容错 / 加载失败 / 刷新按钮 / 结算徽标等
+    既有行为全部保留；新样式类 `.dsh-ror-log*`（表头与行共用同一 grid 列宽
+    模板，窄屏横向滚动不挤压，设计 token 明暗自适应）。
+
+### Tests
+
+- 新增 lib/register-calls.test.js：`cycleRegistrations` 周期边界（含
+  prevBootAt / requestedAt 闭区间、窗口外、无边界、乱序取最早、空记录、脏
+  输入、activate=false）+ 写入器/读取器（追加、上限裁剪丢最旧、重写剔除损坏
+  行、文件缺失）共 13 个用例。
+- 新增 lib/restart-log-format.test.js：`humanizeMs` 毫秒 → 文案（13s /
+  1m 5s / 2h 46m / 非正数与非法输入 → —）共 4 个用例。
+- lib/apply.test.js 新增宿主接线 2 例：register_restart_recovery action=add
+  成功写 register-calls.ndjson（activate=false 携带、remove 与失败不留痕）；
+  boot 记录补登记周期统计与 restartMs（窗口闭区间、窗口外剔除、restartMs =
+  boot.at − requestedAt）。共 19 个新用例，`npm test` 全绿（371 通过）。
+
 ## [0.30.0] - 2026-11-06
 
 ### Added

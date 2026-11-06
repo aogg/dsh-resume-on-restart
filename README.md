@@ -119,8 +119,10 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 - 📜 **重启日志**（0.5.0）：`<stateDir>/restarts.ndjson` 记录每次重启的 boot 记录（含停机归因、
   重启来源、原因标签）与逐会话 restore 结算（resumed/failed/excluded/archived/skipped-budget
   /skipped-no-human-prompt/0.17.0 的 skipped-completed），上限 200 条、损坏行跳过；wake.log 保留不动
-- ⚙️ **设置弹窗重启日志**（0.5.0）：web 设置弹窗新增「重启日志」section（slot `settings.section`），
-  倒序展示每次重启的时间、原因标签、来源、停机时长、恢复成功 x/y，可展开 boot 详情与逐会话恢复明细
+- ⚙️ **设置弹窗重启日志**（0.5.0，0.31.0 起表格化）：web 设置弹窗「重启日志」section（slot `settings.section`），
+  倒序表格展示每次重启的 记录时间、触发、来源、首次登记、登记次数、触发时刻、重启耗时、距上次重启、恢复结果 `x/y`，
+  可展开 boot 详情与逐会话恢复明细；「距上次重启」= 上次重启完成到本次重启完成的间隔（含正常运行时间，非停机时长），
+  0.31.0 起不再使用有歧义的「停机 N」文案
 - 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转，0.17.0 正常结束不显示，0.11.0 状态同步改 ws 推送）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
   点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
   条目对最近活跃列表内（会被重启恢复）的会话显示——0.17.0 起正常结束的会话不再
@@ -378,7 +380,16 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
   `prevPid` / `startAt` / `prevStartAt` / `detectBasis`（`startAt-diff` | `bootAt-diff`）/
   `reason`（原因标签）/ `shutdown`（`{ seen, signal, at }` 停机归因）/ `origin`
   （`{ source, restartId, kind, sessionId, requestedAt }` 或 `null`）/ `runningSessions`
-  （本次参与恢复的候选列表）
+  （本次参与恢复的候选列表）。
+  0.31.0 起另补（历史条目不回填，缺失时前端显示「—」）：`registrationFirstAt` /
+  `registrationFirstSessionId`（本重启周期 `[prevBootAt, origin.requestedAt]` 内第一条
+  register_restart_recovery action=add 成功记录的时刻 / 会话 id）/ `registrationCount`
+  （同周期 add 记录条数，恒写数字）/ `restartMs`（`at − origin.requestedAt` 毫秒 =
+  重启耗时）
+- **登记调用留痕**（0.31.0）：`<stateDir>/register-calls.ndjson`（上限 200 条丢最旧、
+  重写剔除损坏行），每次 register_restart_recovery **action=add 成功**追加
+  `{ at, sessionId, activate? }`（activate 仅 false 时写；remove 不记录）——即上面
+  boot 新字段的数据源
 - **restore 记录**（恢复流程每结算一个候选写一条）：
   `{ type, bootAt, id, result, error, at }`，`result` ∈ `resumed` | `failed` |
   `excluded`（用户排除）| `skipped-budget`（预算耗尽）| `skipped-no-human-prompt`
@@ -391,9 +402,16 @@ webServer 服务缺失时仅 console.warn，不阻断插件加载。
 `crash`（两者皆无：崩溃 / 强杀 / 容器重启）/ `unknown`（形状异常兜底）。
 
 web 设置弹窗新增「重启日志」section（slot `settings.section`，写法照抄 dsh-prompt-history）：
-倒序列表展示每次重启的 启动时间、原因标签徽标、来源（`origin.kind` + 截断 sessionId）、
-停机时长、恢复成功 `x/y`；点击展开 boot 详情与逐会话 restore 明细。文案走宿主 locale
-服务（zh/en 字典、zh 为权威），样式自带（DSH 设计 token，明暗自适应）。
+0.31.0 起为表格（列顺序固定：记录时间 / 触发 / 来源 / 首次登记 / 登记次数 / 触发时刻 /
+重启耗时 / 距上次重启 / 恢复结果），倒序展示每次重启；「触发」按 reason 映射文案
+（auto-restart →「自动重启（所有会话完成）」、settings-ui →「手动按钮」、
+model-tool →「模型工具」），「来源」按 `origin.kind` 映射（auto →「自动」、
+model-tool →「会话 <短id>」、settings-ui →「设置界面」）；点击行展开 boot 详情与
+逐会话 restore 明细。文案走宿主 locale 服务（zh/en 字典、zh 为权威），样式自带
+（DSH 设计 token，明暗自适应；窄屏横向滚动）。
+注意 `downtimeMs` 的口径是「上次重启完成到本次重启完成的间隔（含正常运行时间）」，
+**不是停机时长**，0.31.0 起列名为「距上次重启」并在 title 标注口径；「重启耗时」用
+`restartMs`。
 
 数据经只读路由获取：`GET /api/dsh-resume-on-restart/restarts` → `{ ok, entries, max }`
 （entries 为全部条目，时间正序，客户端自行倒序；围栏与 `/state` 相同）。客户端 bundle 属
