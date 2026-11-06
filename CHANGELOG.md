@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.31.1] - 2026-11-06
+
+### Fixed
+
+- **历史重启日志条目的「重启耗时」按 `at − origin.requestedAt` 回算**
+  （lib/client.js）：`restartMs` 是 0.31.0 才新增的字段，历史 boot 记录没有它，
+  此前表格行与展开明细一律显示「—」；这些记录的 `at`（记录生成时刻）与
+  `origin.requestedAt`（重启发起时刻）都在，新增纯函数 `restartMsOf(boot)`
+  （有限数 restartMs 原样用 → 否则两侧可解析且 `at >= requestedAt` 时回算差值 →
+  否则 null），表格「重启耗时」列与 groupDetail 明细行统一改用
+  `humanizeMs(restartMsOf(boot))`，能显示的都显示、真算不出仍是「—」。
+  `restartMsOf` 与 `humanizeMs` 同口径从 client 工厂导出，新增 3 个单测覆盖
+  「原样 / 回算 / 都缺」三种路径；package.json version 0.31.0 → 0.31.1
+  （顶层 description 字段不动）。
+
 ## [0.31.0] - 2026-11-06
 
 ### Added
