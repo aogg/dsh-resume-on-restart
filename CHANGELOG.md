@@ -1,5 +1,80 @@
 # Changelog
 
+## [0.30.0] - 2026-11-06
+
+### Added
+
+- **设置弹窗 tab1「已登记重启恢复（未重启）」列表**（lib/client.js
+  RestartSection + 宿主只读路由）：
+  - 宿主新增只读路由 `GET /api/dsh-resume-on-restart/restart/registrations`
+    （围栏、鉴权与 404/错误口径完全照 GET /restarts）→
+    `{ ok, lastBootAt, registrations: [{ sessionId, at, title?, activate?,
+    workspacePath? }] }`。数据源 `<stateDir>/proactive-restore.json`：读取复用
+    readProactiveRestore / normalizeProactiveRestore（不新写解析），过滤用新纯
+    函数 `pendingRestartRegistrations(raw, lastBootAt)`
+    （lib/proactive-restore.js）——只保留**登记时间 at 晚于最近一次 boot** 的
+    登记（lastBootAt 取 restarts.ndjson 最后一条 `type === 'boot'` 的 at，
+    缺失回退 bootAt；无 boot 记录/at 不可解析时无从判断 → 保留），按 at 倒序。
+    标题优先 sessionTitleLookup（sessionProjections 投影），拿不到退登记实体
+    自带的 entry.title；`activate` 仅注册但不激活（false）携带；
+    `workspacePath` 走会话 `header.cwd` → workspaceRegistry.resolveByPath，
+    拿不到再退 id → 工作区映射，仍拿不到就省略字段（**登记实体本身不存 cwd，
+    没有改登记格式**）。
+  - 客户端 tab1 在「待重启恢复会话列表」之后、「上次重启无法恢复」之前新增该
+    块：标题 + 口径轻提示 + 行区；行 = 模式徽标（`activate === false` →
+    「不激活」琥珀调 / 其余 →「恢复」蓝调）+ 会话标题（缺失退 shortId 弱化）+
+    会话短 id 弱化小字（有标题时才显示；完整 id 恒在行容器 title）+ 工作区路径
+    小字（拿到才显示，省略号截断）+ 登记时间；行可点跳转（jumpToSession，成功后
+    关设置弹窗，照 0.25.0 可点行做法）。
+    空态「暂无已登记会话」；路由 404（混合版本窗口）→ 整块静默隐藏不算失败
+    （照 /restarts 404 口径），其余错误落一小段错误文案 + console.warn。
+  - i18n 新增 zh/en：restart.regTitle / restart.regEmpty / restart.regAt /
+    restart.regBadgeRestart / restart.regBadgeNoActivate / restart.regError /
+    restart.regHint；新样式类 .dsh-ror-reg-badge / .dsh-ror-reg-badge-off /
+    .dsh-ror-reg-ws / .dsh-ror-reg-hint（设计 token，明暗主题自适应）。
+- **tab3「技能与注入」新增「本插件模型工具」区块**（lib/client.js
+  SkillsSection）：展示 `register_restart_recovery` 与 `restart_harness`
+  两个模型工具的名称 + description（两张工具卡，样式照 .dsh-ror-skill* 体系），
+  并标注「工具不是技能」轻提示；数据来自 /skills/catalog 响应新增的
+  `tools: [{ name, description }]`，host 侧直接引用注册工具时用的常量
+  RESTART_HARNESS_TOOL / REGISTER_RECOVERY_TOOL（OWN_TOOLS），**不重复写死
+  文案**。catalog 无 tools 字段（旧版 host / 404 混合版本窗口）时整块不渲染。
+
+### Changed
+
+- **tab3 收敛到本插件范围**（lib/index.js + lib/client.js）：
+  - `GET /skills/catalog` 的 skills 只保留本插件注册的技能（实测本插件
+    `ctx.skills.register` 出来的 summary 是 `provider: "runtime"`、
+    `source: "runtime"`——provider 是宿主 SkillRegistry 的 runtime 层名而**不是
+    插件包名**，别家 runtime 技能同样是 'runtime'（对照：genui 是
+    `provider: "dsh-genui"`、`source: "bundled"`），所以**名字白名单
+    register-restart-recovery 是唯一可靠判定**，`provider === 插件包名` 只作
+    前瞻兜底；纯函数 isOwnPluginSkill / filterOwnPluginSkills 可单测），
+    genui / find-init-helper / ao-simple-daily-report 等别家技能 100% 不出现。
+  - usage 聚合同口径：**聚合前**用 filterOwnPluginSkillUsageEntries 按技能名
+    过滤（skill-usage.ndjson 原始记录不动），`GET /skills/usage` 的 entries
+    与 total 用同一口径过滤。
+  - 全局统计行「被调用技能数」文案标注为本插件范围
+    （skills.statUsed zh「被调用技能数（本插件）」/ en "Skills invoked (this
+    plugin)"），skills.note / skills.empty 口径说明同步微调。
+- 技能名收敛到常量 OWN_SKILL_NAME / OWN_SKILL_NAMES（注册处与过滤白名单同一
+  来源，避免两处漂移）；两个模型工具的 name + description 抽到模块常量，注册
+  与设置弹窗展示共用同一份文案。
+- lib/proactive-restore.js 文件头注释补 0.30.0（pendingRestartRegistrations）。
+- 新增/补充单测（node --test，无 e2e、不起服务；总数 333 → 352）：
+  - lib/own-scope.test.js（新，7 用例）：工具常量与共用引用、isOwnPluginSkill
+    白名单判定/别家技能不命中/脏输入、filterOwnPluginSkills、
+    filterOwnPluginSkillUsageEntries、lastBootAtOf at/bootAt 回退与脏输入；
+  - lib/routes.test.js（新，4 用例）：用假 ctx 跑 apply() 后直接调路由 handler，
+    断言 /skills/catalog 的过滤与 tools 字段、/skills/usage 同口径过滤、
+    /restart/registrations 的 boot 过滤/倒序/字段、以及不可信 Host → 403；
+  - lib/proactive-restore.test.js 追加 pendingRestartRegistrations 5 用例
+    （at > lastBootAt 过滤与倒序、at == lastBootAt 剔除、lastBootAt 缺失全保留、
+    activate/title 携带口径、at 不可解析保留 + 脏输入）；
+  - lib/pending-restore.test.js 追加 normalizeRestartRegistrations 3 用例
+    （sessionId/at/可选字段归一化、activate 仅 false 携带、保持宿主顺序与脏输入）。
+  package.json test 脚本纳入两个新文件。
+
 ## [0.29.0] - 2026-11-06
 
 ### Added
