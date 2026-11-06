@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.29.0] - 2026-11-06
+
+### Added
+
+- **host 侧技能调用统计**（lib/index.js + 新模块 lib/skill-usage.js）：
+  - 监听宿主 `tools/result` 事件（宿主 dsh-tools 每次工具执行落定后派发
+    `(exec, result)`，写法已核对宿主源码与 dsh-tool-present 插件先例；宿主对
+    观察者异常自带 contain），过滤 `exec.name === 'skill'` 的调用逐条记录
+    `{ at, skill, sessionId, sessionTitle?, workspacePath?, cwd, ok }` 到
+    `<stateDir>/skill-usage.ndjson`：技能名取 `exec.arguments.name`、会话 id 取
+    `exec.agent.id`、cwd 取 `exec.agent.session.header.cwd`、成功与否取
+    `!result.isError`；sessionTitle 复用 sessionProjections 投影
+    （sessionTitleLookup 现成函数），workspacePath 用 cwd →
+    workspaceRegistry.resolveByPath（异步解析，拿不到留空）。
+  - 新模块 lib/skill-usage.js：ndjson 追加写入器（上限 1000 条超出丢最旧、
+    重写顺带剔除损坏行——照 restarts.ndjson 写入器同款模式与容错口径，写失败
+    只 warn）+ 聚合函数（total/firstAt/lastAt + 每技能 count/okCount/lastAt/
+    byWorkspace/bySession（按次数降序取前 10）/daily7（最近 7 天 UTC 日期槽））。
+  - 两个只读路由（围栏与 404/错误口径照 GET /restarts）：
+    `GET /skills/catalog` → `{ ok, skills: [{name, source, provider, description,
+    whenToUse, content, modelInvocable, userInvocable}], usage: <聚合统计> }`
+    （目录来自 ctx.reflect.get('skills') 的 list()/get()，服务缺失/读取失败 →
+    空数组 + warn 不 500）；`GET /skills/usage` → `{ ok, entries: <尾部 200 条>,
+    total }`。
+  - 事件监听/技能服务不可用时统计为空（warn 可见），不影响插件其他功能；
+    apply.test.js 监听器守卫用例纳入 tools/result。
+  - lib/skill-usage.test.js（新，19 用例，node --test 无 e2e）：路径拼接、常量、
+    追加写入与读取、目录自动创建、上限截断丢最旧、损坏行跳过/重写剔除、
+    聚合（时间维度/at 不可解析降级、按技能、按工作区、按会话排序与截断、
+    平手排序、daily7 归槽与窗口外、脏输入安全）；package.json test 脚本纳入。
+- **设置弹窗第三个 tab「技能与注入」**（lib/client.js）：「重启」合并条目
+  （0.28.0 起 RestartTabsSection）在 tab1「重启」/tab2「重启日志」后新增
+  tab3「技能与注入」（restart.tabSkills，zh「技能与注入」/en "Skills &
+  Prompts"；默认选中仍是 tab1），新组件 SkillsSection：
+  - 挂载时并行拉 GET /skills/catalog 与 GET /skills/usage；404（插件更新后
+    DSH 未重启的混合版本窗口）按空态「暂无数据」展示不算失败（照 0.5.1
+    「重启日志」先例），其余失败走报错态；
+  - 顶部全局统计行（总调用次数 / 被调用过的技能数 / 记录起始时间）+ 搜索框
+    （按名称+描述大小写不敏感就地过滤）；
+  - 每技能卡片：名称、来源（provider，title 带 source 来源类别）、徽标
+    （模型可用 modelInvocable / 用户可见 userInvocable）、description、
+    whenToUse、该技能统计（总次数/成功率/最近调用）、「正文」折叠展开
+    （content `<pre>` 预格式化，默认收起）、按工作区分布、按会话分布（前 10）、
+    最近7天每日次数（纯文本，不引图表库）；
+  - 新样式类 .dsh-ror-skill*（设计 token 照既有体系，明暗主题自适应）；
+    i18n 新增 restart.tabSkills 与 skills.* 文案组（zh/en）。
+- package.json：version 0.28.0 → 0.29.0，description 追加 0.29.0 说明，
+  test 脚本纳入 lib/skill-usage.test.js。
+
 ## [0.28.0] - 2026-11-06
 
 ### Changed
