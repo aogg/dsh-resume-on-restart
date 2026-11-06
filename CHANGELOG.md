@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.27.1] - 2026-11-06
+
+### Changed
+
+- **register-restart-recovery 技能 description 摘要行补上触发时机**（lib/index.js）：
+  0.27.0 及之前 description 一行只写两种模式（默认「重启后自动恢复并继续」、
+  activate=false 则「重启但不激活本会话」），没有写明「注册后是等**所有会话
+  完成**才自动触发一次重启」这一关键触发时机——该说明此前只在正文 content
+  里，模型看技能目录摘要（available_skills 的 summary 行）时看不到，容易
+  不知道重启何时发生。0.27.1 起 description 开头补括注「（注册后等所有会话
+  完成自动触发一次重启）」；whenToUse / content 与其他任何代码均不动。
+- package.json：version 0.27.0 → 0.27.1（顶层 description 字段不动）。
+
 ## [0.27.0] - 2026-11-04
 
 ### Fixed
