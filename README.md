@@ -140,6 +140,15 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   即可**取消本次重启**（HTTP 409 / 命令与工具错误结果，不产生任何重启工件）或**取消本次
   自动恢复**（落一条 `resume-cancel` 重启日志，界面显示「恢复已取消」）。处理器抛错与超时
   （`hookTimeoutMs`，默认 10s）都按取消的 fail-closed 口径处理，卡死的第三方插件不会挂住流程
+- 📣 **IM 事件通知取消**（0.35.0，兼容 dsh-im ≥ 5.8.17，详见 [docs/支持插件说明.md](docs/支持插件说明.md)）：
+  作为**消费方**向 dsh-im 注册「发送前通知提供者」——重启工件开写前把「本次将恢复的候选」
+  （与待恢复列表同口径，activate:false 不算）快照进进程内集合，此后到进程退出之间，
+  这些会话因重启被打断而触发的 completed / failed / timeout 通知与计划内宿主级 shutdown
+  通知按 `Decision={cancel:true}` 取消（恢复流程马上会拉起它们并注入继续提示，这两条
+  通知是噪音）；候选为空、不命中、crash/startup 一律没意见（fail-open，照发）。dsh-im
+  缺失或旧版时**零注册、零日志、零行为差异**（静态 inject 不声明 dshIm——cordis inject
+  全是必须依赖、缺失即插件不加载；改用与 webServer 同款的动态注入 `ctx.inject(['dshIm'], …)`，
+  版本门 `notificationVersion === 1`）
 - 🧪 **技能展示 tab 与提示词可见**（0.32.0）：设置弹窗第三个 tab 由「技能与注入」改名
   **「技能展示」**（en `Skill Showcase`），并在技能/工具清单之后新增「重启后恢复会话的
   提示词」区块——按本次启动的真实数据渲染投递正文、逐行列出每个片段的出现条件与来源、
@@ -750,6 +759,25 @@ ctx.on('resume-on-restart/before-restart', async (payload) => {
   （包根也 re-export）。
 - 完整字段表、示例、反例与排障：**[docs/被扩展说明.md](docs/被扩展说明.md)**。
 
+## 与 dsh-im 的通知兼容（0.35.0）
+
+本插件也支持**别的插件**：dsh-im ≥ 5.8.17（`ctx.dshIm.notificationVersion === 1`）。
+作为消费方向它注册一个「发送前通知提供者」，取消两类重启前的噪音通知：
+
+| 通知 | 取消条件 | 说明 |
+|---|---|---|
+| 会话级 `completed` / `failed` / `timeout` | `context.sessionId` 在「本次重启的待恢复候选集合」内 | 会话马上会被自动恢复并注入继续提示，被打断的通知是噪音 |
+| 宿主级 `shutdown` | `sessionId` 为空 + 候选集合非空 | 计划内重启且确有会话将被恢复；候选集合为空则不取消（照发） |
+
+- 候选集合：`before-restart` 钩子全部通过、重启工件开写之前，把 `restartInfoCandidates()`
+  （与待恢复列表同口径；`activate: false` 只登记不拉起、不算「将恢复」）快照进进程内集合；
+  进程退出自然消失——重启后新进程的 completed「恢复结果汇报」不受影响；重启失败立即清空。
+- 不存在时完全降级：dsh-im 缺失/旧版 → 零注册、零日志、本插件其余功能零差异
+  （动态注入 + 版本门，静态 `inject` 不含 `dshIm`）。
+- 排障：dsh-im 日志 `notification (…) cancelled by resume-on-restart`；
+  `ctx.dshIm.listNotificationProviders()` 应能看到本提供者。
+- 版本判断、降级依据、取消口径与边界：**[docs/支持插件说明.md](docs/支持插件说明.md)**。
+
 ## 重启后投递的继续提示词（0.32.0）
 
 重启后自动恢复会话时，本插件向每个恢复成功的会话投递**一条普通 user 消息**（不是
@@ -837,6 +865,8 @@ system prompt），正文由 `lib/detect.js` 的 `noticeSegments()` 逐行拼出
 # （归一化/读/写/删/幂等合并/完成判定）与 filterCompletedCandidates 的
 # bypassIds 直通（缺省向后兼容）单测由测试角色补齐）、
 # 0.33.0 的冷会话 header 磁盘读取（首帧梯度读取/memo）与冷 subagent 结算口径
+# 0.35.0 的 dsh-im 通知兼容（resolve 全分支/描述符形状/候选集合读写/缺失与旧版
+# 降级/disposer/重复注册可见降级/动态注入接线）
 npm test
 ```
 

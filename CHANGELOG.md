@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.35.0] - 2026-11-07
+
+### Added
+
+- **兼容 dsh-im：重启前取消「将被自动恢复会话」的 IM 事件通知**。此前一次计划内
+  重启在 IM 上是双份噪音：候选会话被重启打断先来一条 failed/completed 事件通知，
+  宿主停机再来一条 shutdown 通知——而恢复流程马上会把这些会话拉起来并注入继续
+  提示，两条通知都没有信息量。0.35.0 起本插件作为**消费方**向 dsh-im（≥ 5.8.17，
+  `ctx.dshIm.notificationVersion === 1`）注册一个「发送前通知提供者」（dsh-im
+  侧契约见其仓库 `docs/被扩展说明.md`）：
+  - **lib/im-notify.js（新增，一功能一文件）**：提供者 id `resume-on-restart`
+    （匹配 dsh-im 的 `/^[a-z][a-z0-9-]{1,31}$/`），订阅 `completed` / `failed` /
+    `timeout` / `shutdown`（不订阅 startup——它发生在重启之后；不订阅 crash——
+    上次异常退出与本次计划内重启无关）。resolve 两条取消口径：①会话级——
+    `context.sessionId` 在候选集合内 → `{cancel:true, reason:'session will be
+    auto-restored after restart by dsh-resume-on-restart'}`；②宿主级——
+    `sessionId` 为空 + `event==='shutdown'` + 候选集合非空 → `{cancel:true}`
+    （候选为空不取消，停机通知有信息量）；其余一律 `null`（没意见，fail-open），
+    crash 在 resolve 里再挡一层作防御性意图声明。reason 逐字固定，便于
+    dsh-im 侧日志检索。
+  - **候选集合（lib/index.js 的 performRestart）**：`before-restart` 扩展点钩子
+    全部通过、重启工件开写之前，把 `restartInfoCandidates()`（与设置弹窗「待恢复
+    列表」同一口径：自动候选 ∪ 主动注册，已剔用户排除/正常结束/归档/冷 subagent；
+    `activate: false` 只登记不拉起、不算「将恢复」）快照进 im-notify 的进程内
+    模块级集合——四个重启入口（按钮 / `/restart` 命令 / 模型工具 / 守门自动重启）
+    共用 performRestart，全部生效。进程退出集合自然消失（模块级内存结构不落盘），
+    重启后新进程的 completed「恢复结果汇报」不受影响；重启失败（`restartDsh`
+    `ok:false`，进程继续活着）立即清空避免误杀正常通知；候选取数失败降级空集合
+    并 warn（绝不阻断重启，与 flushSessionsBounded 的兜底口径一致）。
+  - **完全降级（规范硬性要求）**：dsh-im 缺失或旧版时**零注册、零日志、零行为
+    差异**。依据 cordis 4.x 的 inject 声明全部是必须依赖（Fiber 对每项做
+    `_checkImpl`，任一项无 impl 即 epoch=INACTIVE、apply 永不执行——声明 dshIm
+    而宿主没装 dsh-im 会让本插件整个不加载），静态 `inject` 保持
+    `['agents', 'tools']` 不加 `dshIm`，改用与 webServer 接线（0.14.0 起）同款的
+    动态注入 `ctx.inject(['dshIm'], …)`——缺失即回调永不执行；注册函数内
+    `dshIm?.notificationVersion !== 1` 静默返回（dsh-im 契约的官方降级写法）。
+    disposer 经 `ctx.effect(() => dispose, 'resume-on-restart: dsh-im notification
+    provider')` 挂 inject **内层** fiber：dsh-im 服务重载即摘除、重载完成再注册；
+    重复注册的 `notification-provider-exists` 捕获后 warn 一条（可见降级不静默），
+    其它错误原样上抛。
+  - **docs/支持插件说明.md（新增）**：按「必须遵守规范」要求写明——支持的插件
+    （dsh-im ≥5.8.17）与版本判断、如何关联（两条取消规则、候选集合口径与写入/
+    清空时机、Decision={cancel:true} 的整次扇出语义）、对应插件不存在时的行为
+    （三层降级及依据）、边界（只取消不发送/改写；不碰 crash/startup；候选是
+    快照，恢复失败的会话走「上次重启无法恢复」列表呈现）与排障（dsh-im 侧
+    `notification (…) cancelled by resume-on-restart` 日志行、
+    `ctx.dshIm.listNotificationProviders()` 自查、本插件降级零日志的取证口径）。
+  - **测试**：新增 lib/im-notify.test.js（20 用例，node --test，无 e2e 不联网）：
+    resolve 全分支（会话级命中/不命中、宿主级 shutdown 两种口径、startup、crash、
+    脏输入 fail-open）、描述符形状（id 正则、events 订阅面与副本、resolve 委托）、
+    进程内集合写入/整体替换/脏条目过滤/快照冻结/清空、dsh-im 缺失（undefined/
+    空对象）与旧版（notificationVersion 0/2/'1'/null/无成员）静默降级零日志、
+    注册 happy path 与 disposer 本体、重复注册可见降级、其它错误上抛、动态注入
+    接线（inject(['dshIm']) 参数、scope.effect 挂载与 label、旧版不挂 effect）。
+    npm test 469 全绿（449 + 20）。
+
+### Changed
+
+- **历史整备**：`git rebase --onto d33567b f9de281 master` 摘除 0.34.0 与 0.33.0
+  之间的垃圾提交 f9de281「/.dsh/tmp」（内容仅 .gitignore 一行，未推送），
+  0.34.0 提交重放为 7d9eee4（两者改动不同文件，无冲突）；`/.dsh/tmp` 忽略行
+  并回 .gitignore 尾部、随本提交入库。rebase 后与提交前 npm test 均全绿。
+
 ## [0.34.0] - 2026-11-07
 
 ### Added
