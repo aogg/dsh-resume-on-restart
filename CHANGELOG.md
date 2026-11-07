@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.32.0] - 2026-11-07
+
+### Added
+
+- **对外扩展点**（`lib/hooks.js`，新文件；其余插件用 `ctx.on` 注册 cordis 串行事件）：
+  - `resume-on-restart/before-restart`：重启被调用之后、真正重启之前派发。四个入口
+    （设置弹窗按钮 / `/restart` 命令 / `restart_harness` 模型工具 / 注册后守门自动重启）
+    共用 `performRestart` 这一处，因此每个重启请求只派发一次。处理器按注册顺序逐个
+    `await`，全部跑完才继续原有重启逻辑；任一处理器返回取消值即**本次重启整体取消**：
+    不写任何重启工件、不 spawn helper、进程继续活着，统一返回
+    `{ ok:false, cancelled:true, mode, restartId:null, by, reason, error }`。
+    `POST /restart` 对取消回 **409**（与「重启失败」的 500 区分），客户端文案区分为
+    「重启被插件取消」；`/restart` 命令与模型工具以错误结果返回 `error` 文案；守门
+    自动重启保留武装、下一轮再试。`wake.log` 留一行 `restart cancelled: …`。
+  - `resume-on-restart/before-resume`：检测到重启、停机归因与 boot 记录落盘之后，
+    挑候选与 `restoreCandidates` 之前派发（每次开机一次，服务慢启动后的续等补跑不
+    重复派发）。取消即**本次自动恢复整体跳过**：不挑候选、不 `resumeSession`、不投递
+    继续提示、也不做 fallback 唤醒；`restarts.ndjson` 落一条 `type:'resume-cancel'`
+    条目（`by` / `reason` / `detail`，处理器抛错或超时另带 `hookError` / `hookTimeout`
+    标记），`wake.log` 留一行，设置弹窗「重启日志」结果列显示「恢复已取消」并在展开
+    明细给出取消方与原因。
+  - 取消约定对齐 cordis `isBailed`（`null` / `false` / `undefined` = 放行；其它非空值
+    = 取消，推荐 `{ cancel: true, by, reason }`），并明确 `serial` 语义：任何非空返回值
+    都会终止后续处理器（`{ cancel: false }` 只是「不算取消」，同样截断串行链）。
+  - 兜底（fail-closed）：处理器抛错、或超过新配置项 `hookTimeoutMs`（默认 `10000`ms）
+    都按取消处理；宿主缺 `ctx.serial` 时静默放行，不阻塞原有逻辑。
+  - 事件名常量从 `lib/hooks.js` 导出（`HOOK_EVENTS` / `BEFORE_RESTART_HOOK` /
+    `BEFORE_RESUME_HOOK`），包根 re-export，并新增包导出子路径
+    `dsh-resume-on-restart/hooks`。
+- **`GET /api/dsh-resume-on-restart/notice`**（只读，围栏同本插件其余路由）：返回重启后
+  恢复会话的提示词——`sample`（按本次启动真实数据渲染的完整正文）、`segments`（8 条
+  白名单片段，本次未出现的 `text` 为 `null`）、`delivery`（`followup`/`inject`、
+  消息 `source`、`config.notice`、`restoredSessionId`）。数据与 `deliver()` 同源，
+  客户端不写死任何文案。
+- **`lib/detect.js` 新增 `noticeSegments()` / `NOTICE_SEGMENT_KEYS`**：把提示词拆成
+  可枚举片段（`header` / `boot` / `downtime` / `lastSession` / `lastActive` / `restored`
+  / `custom` / `tail`），`buildNotice()` 改为各段 `join('
+')`——**输出与 0.31.x 逐字
+  一致**（`lib/detect.test.js` 的逐字断言继续守护）。
+- 文档：新增 [docs/被扩展说明.md](docs/被扩展说明.md)（两个扩展点的事件名、触发时机、
+  payload 字段表、取消约定、抛错/超时兜底、可观测性、反例、代码位置索引）与
+  [docs/被注入说明.md](docs/被注入说明.md)（投递时机与对象、消息外壳与 v4 约束、逐行
+  模板表、真实样本、为什么这么写、如何在界面上查看、定制与排障）。
+
+### Changed
+
+- **设置弹窗第三个 tab 由「技能与注入」改名「技能展示」**（`restart.tabSkills`，zh
+  `技能展示` / en `Skill Showcase`），并在技能列表与「本插件模型工具」区块之后新增
+  「重启后恢复会话的提示词」区块（`NoticePanel`，`.dsh-ror-notice*`）：真实渲染正文、
+  逐片段出现条件（i18n `notice.when.<key>`）与投递方式；`/notice` 路由 404 时显示
+  「重启 DSH 后可见」的混合版本提示，不算加载失败。
+- 重启日志表格的「恢复结果」列与展开明细支持 `resume-cancel` 条目（徽标「恢复已取消」，
+  取消方/原因/抛错/超时明细；`groupEntries` 归入所属 boot 组，孤儿条目自成一组）。
+
+### Fixed
+
+- 无（本版本无缺陷修复）。
+
+### Tests
+
+- 新增 `lib/hooks.test.js`（取消归一化、payload 形状与冻结、带超时的串行派发：
+  缺 `serial` 放行 / async 等待 / 抛错=取消 / 超时=取消）、
+  `lib/hook-cancel.test.js`（apply 接线：`POST /restart` 取消 → 409 且无重启工件；
+  `before-resume` 取消 → 只落 boot + `resume-cancel`、无逐会话结算；抛错 fail-closed；
+  放行不写 `resume-cancel`）、`lib/notice.test.js`（分段 key 与 `buildNotice` 一致、
+  zh/en 的 `notice.when.*` 齐全、tab 文案、`groupEntries` 收集 `resume-cancel`、
+  `resumeCancelText` 降级口径），`lib/routes.test.js` 增 `/notice` 用例。
+  `npm test` 共 406 个用例全绿。
+
 ## [0.31.1] - 2026-11-06
 
 ### Fixed

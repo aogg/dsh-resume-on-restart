@@ -129,6 +129,18 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   显示（不会被恢复）、0.10.0-0.16.x 含手动停止的会话，
   被忽略前缀的会话不显示（0.20.0 起列表默认不限量、不再有窗口外）；候选/排除状态由宿主 websocket 快照广播实时同步
   （0.11.0 起，不再轮询），多标签页自动对齐
+- 🧩 **对外扩展点**（0.32.0，详见 [docs/被扩展说明.md](docs/被扩展说明.md)）：其它插件用
+  `ctx.on` 注册两个 cordis 串行事件——`resume-on-restart/before-restart`（重启被调用后、
+  真正重启前）与 `resume-on-restart/before-resume`（重启完成后、恢复会话前）。派发按注册
+  顺序逐个 await，全部处理器跑完才继续原有逻辑；任一处理器返回 `{ cancel: true, by, reason }`
+  即可**取消本次重启**（HTTP 409 / 命令与工具错误结果，不产生任何重启工件）或**取消本次
+  自动恢复**（落一条 `resume-cancel` 重启日志，界面显示「恢复已取消」）。处理器抛错与超时
+  （`hookTimeoutMs`，默认 10s）都按取消的 fail-closed 口径处理，卡死的第三方插件不会挂住流程
+- 🧪 **技能展示 tab 与提示词可见**（0.32.0）：设置弹窗第三个 tab 由「技能与注入」改名
+  **「技能展示」**（en `Skill Showcase`），并在技能/工具清单之后新增「重启后恢复会话的
+  提示词」区块——按本次启动的真实数据渲染投递正文、逐行列出每个片段的出现条件与来源、
+  给出投递方式（`followup`/`inject`、消息 `source`、`config.notice`）。数据来自只读路由
+  `GET /notice`，与 `deliver()` 同源（[docs/被注入说明.md](docs/被注入说明.md)）
 - 💬 **信息性消息**：投递"检测到重启 + 中断时长 + 上次活跃会话（+ 恢复说明）"摘要，由 agent 自主决定下一步
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`
@@ -674,10 +686,75 @@ candidates 随 `startRestart` 写入带 workspace——非空字符串才带、�
   （helper 就绪门控与客户端轮询共用；`restart` 身份块保留整个进程生命周期，
   `restarted` toast 标记被 `/restart/ack` 消费）
 - `POST /api/dsh-resume-on-restart/restart` → `{ ok, mode, restartId, note }`（409 =
-  已有重启进行中）
+  已有重启进行中；0.32.0 起 409 也用于「被扩展点 before-restart 取消」：响应体
+  `{ ok:false, cancelled:true, by, reason, error }`，客户端据此显示「重启被插件取消」）
+- `GET /api/dsh-resume-on-restart/notice` → `{ ok, plugin, bootAt, prevBootAt, downtimeMs,
+  restoredSessionId, sample, segments: [{ key, text }], delivery: { method, wakeup, role,
+  source, customNotice } }`（0.32.0：重启后恢复会话的提示词——`sample` 是按本次启动
+  真实数据渲染的完整正文，`segments` 恒为 8 条白名单全量、本次未出现的 `text` 为 `null`；
+  设置弹窗「技能展示」tab 的提示词区块用它渲染，客户端不写死任何文案）
 - `POST /api/dsh-resume-on-restart/restart/ack` → 消费 toast 标记
 - `GET /api/dsh-resume-on-restart/unrestored` → `{ ok, rows: [{ id, at, bootAt?, title?, workspace?, error? }] }`（0.26.0：「上次重启无法恢复」只读列表，store 倒序、空 → rows: []；`enableRestart: false` 时不存在）
 - `POST /api/dsh-resume-on-restart/unrestored/restore` → `{ ok }`（0.26.0：手动恢复一条，body `{ sessionId }`；等服务就绪（≤ `serviceWaitTimeoutMs`）后按候选循环同款恢复并投递继续提示，会话已活跃则不重复投递直接成功；成功从 store 移除该条并写 `resumed` 结算；失败 `{ ok:false, error }` 响应风格照 `POST /state`）
+
+## 对外扩展点：让别的插件挂进重启与恢复流程（0.32.0）
+
+两个 cordis 串行事件，其它插件 `ctx.on` 即可注册（监听器跟随插件 fiber 自动清理，
+不需要 inject 本插件）：
+
+| 事件名 | 触发时机 | 取消的后果 |
+|---|---|---|
+| `resume-on-restart/before-restart` | 重启被调用之后、真正重启之前（按钮 / `/restart` 命令 / `restart_harness` 工具 / 守门自动重启共用同一处） | 本次重启整体取消：不写工件、不拉 helper、进程继续活着；HTTP 409 + `{ cancelled, by, reason }` |
+| `resume-on-restart/before-resume` | 重启完成、boot 记录落盘之后，挑候选与恢复会话之前（每次开机一次，续等补跑不重复） | 本次自动恢复整体取消：不挑候选、不恢复、不投递、不做 fallback 唤醒；落一条 `resume-cancel` 重启日志 |
+
+```js
+// 其它插件里
+ctx.on('resume-on-restart/before-restart', async (payload) => {
+  await flushMyJournal()                                    // 宿主会等它跑完
+  if (myMigrationRunning()) {
+    return { cancel: true, by: 'my-plugin', reason: '迁移中，稍后重启' } // 取消本次重启
+  }
+  return undefined                                          // 放行
+})
+```
+
+- 派发语义：按注册顺序**逐个 await**，全部跑完（且都没有取消）才继续本插件原有逻辑。
+- 取消约定：返回 `undefined` / `null` / `false` = 放行；返回任何其它非空值（推荐
+  `{ cancel: true, by, reason }`）= 取消，并**终止后续处理器**（cordis `serial` 语义）。
+- 兜底：处理器抛错、超过 `hookTimeoutMs` 都按取消处理（fail-closed）；宿主没有
+  `ctx.serial` 时静默放行。
+- 事件名常量：`import { HOOK_EVENTS } from 'dsh-resume-on-restart/hooks'`
+  （包根也 re-export）。
+- 完整字段表、示例、反例与排障：**[docs/被扩展说明.md](docs/被扩展说明.md)**。
+
+## 重启后投递的继续提示词（0.32.0）
+
+重启后自动恢复会话时，本插件向每个恢复成功的会话投递**一条普通 user 消息**（不是
+system prompt），正文由 `lib/detect.js` 的 `noticeSegments()` 逐行拼出（`buildNotice()`
+= 各段 join）：
+
+```
+[resume-on-restart] 检测到 DSH 服务已重启。
+上次运行于 <上次启动>，本次于 <本次启动> 重启完成。
+中断约 <N 分 M 秒>。
+重启前最近活跃的会话：<会话 id>
+该会话最后活跃于 <ISO>。
+已自动恢复重启前活跃的会话 <会话 id>（最后活跃于 <ISO>）。
+<config.notice 自定义行（可选）>
+如需继续之前的工作，或启动新任务，请自主决定下一步。
+```
+
+- 空的片段不出现（例如没有上次启动记录时第 2 行变成「本次于 Y 启动。」）。
+- 投递方式由 `wakeup` 决定：`true`（默认）→ `agent.followup` 新回合；`false` →
+  `agent.inject` 注入当前回合。
+- 消息外壳（`createNoticeMessage`）：`role: 'user'` + `source { kind:
+  'dsh-resume-on-restart', form: 'notice', summary: 'resume-on-restart: DSH restarted at …' }`
+  （会话格式 v4 要求 `source.kind` 是生产者自己的名字且不能是 `'plugin'`）。
+- 只有恢复成功的会话才收到；被排除/归档/正常结束/不激活/服务超时的一律不投递，
+  续等补跑与手动恢复同一条实现、按 `deliveredTo` 去重。
+- 在设置弹窗 → 重启 → **技能展示** tab 底部可见「重启后恢复会话的提示词」区块
+  （真实渲染 + 逐行出现条件 + 投递方式）；数据源 `GET /notice`。
+- 逐行模板表、真实样本、定制与排障：**[docs/被注入说明.md](docs/被注入说明.md)**。
 
 ## Docker / PID 1 容器支持
 
@@ -716,6 +793,7 @@ candidates 随 `startRestart` 写入带 workspace——非空字符串才带、�
 | `maxDelayMs` | `5000` | 0.8.0：模型工具 `delayMs` 参数的上限（有效下限 1000ms） |
 | `pid1ExitCode` | `0` | 0.8.0：pid1-exit 模式的退出码。`--restart=on-failure` 策略只在非 0 退出时拉起容器；`always` / `unless-stopped` 保持默认 0 即可。取值 0-255，非法回退默认 |
 | `autoRestartSettleMs` | `10000` | 0.22.0：注册后守门自动重启的 settle 窗口（ms）——全部会话完成（不在 running；正在向用户提问等待回答的也算完成）→ 再等这么多毫秒才真正触发重启；窗口内评估翻回「还有会话在干活」则取消回等待。非正数/非法回退默认 |
+| `hookTimeoutMs` | `10000` | 0.32.0：对外扩展点（`before-restart` / `before-resume`）**单个处理器**的等待上限（ms）。超时按取消处理（fail-closed）——第三方插件卡死不会把重启/恢复流程永久挂住；处理器抛错同样按取消处理。非正数/非法回退默认。详见 [docs/被扩展说明.md](docs/被扩展说明.md) |
 
 ## 开发 / 测试
 
@@ -766,7 +844,14 @@ client bundle：localStorage 存根防御式读写、boot 匹配——restartId 
 丢最旧、候选池合并——主动注册优先去重/命中排除丢弃主动注册身份/自动候选维持现状、
 恢复候选三列表合并——picked>paused>proactive 去重/at 降序/restoreMax 截断但主动
 注册豁免/脏输入防御/不改入参；真实临时文件读写、缺失/损坏 → {}），
-不依赖 DSH 运行时。另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
+不依赖 DSH 运行时。0.32.0 新增 `lib/hooks.test.js`（取消值归一化 / payload 构造与冻结 /
+带超时的串行派发：缺 serial 放行、async 处理器等待、抛错与超时=取消）、
+`lib/hook-cancel.test.js`（apply 接线：`POST /restart` 被 before-restart 取消 → 409 且
+不产生任何重启工件；before-resume 取消 → 只落 boot + resume-cancel、无逐会话结算；
+抛错 fail-closed；放行不写 resume-cancel）与 `lib/notice.test.js`（提示词分段 key 与
+`buildNotice` 逐字一致、zh/en 的 `notice.when.*` 齐全、tab 改名、`groupEntries` 收集
+`resume-cancel`、`resumeCancelText` 降级口径），均无 e2e、不起服务。另有
+`tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。
 
