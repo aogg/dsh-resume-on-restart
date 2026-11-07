@@ -127,12 +127,13 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
   倒序表格展示每次重启的 记录时间、触发、来源、首次登记、登记次数、触发时刻、重启耗时、距上次重启、恢复结果 `x/y`，
   可展开 boot 详情与逐会话恢复明细；「距上次重启」= 上次重启完成到本次重启完成的间隔（含正常运行时间，非停机时长），
   0.31.0 起不再使用有歧义的「停机 N」文案
-- 🖱️ **会话顶栏开关**（0.4.0，0.10.0 口径反转，0.17.0 正常结束不显示，0.11.0 状态同步改 ws 推送）：web 会话顶栏（「标准模式」标签同排）出现「重启时恢复会话」条目，
-  点击即可把当前会话标记为「重启后不自动恢复」，再点取消；标记按会话持久化，重启 DSH 后仍生效。
-  条目对最近活跃列表内（会被重启恢复）的会话显示——0.17.0 起正常结束的会话不再
-  显示（不会被恢复）、0.10.0-0.16.x 含手动停止的会话，
-  被忽略前缀的会话不显示（0.20.0 起列表默认不限量、不再有窗口外）；候选/排除状态由宿主 websocket 快照广播实时同步
-  （0.11.0 起，不再轮询），多标签页自动对齐
+- 🖱️ **会话顶栏开关**（0.4.0 起；0.36.0 起**常驻 + 五态**，0.11.0 起状态同步走 ws 推送）：
+  web 会话顶栏（「标准模式」标签同排）的「重启时恢复」条目**任何会话都显示**，状态按
+  优先级判断：已归档（灰显禁用）→ 已登记（点击取消）→ 已排除（点击改为恢复）→
+  自动恢复候选（点击改为不恢复）→ 其余（**典型 = 已完成的会话**，点击补登记
+  「重启后恢复」，0.36.0 的用户诉求）。登记/排除按会话持久化，重启 DSH 后仍生效；
+  候选/登记/排除/归档状态由宿主 websocket 快照广播实时同步（0.11.0 起不再轮询），
+  多标签页自动对齐
 - 🧩 **对外扩展点**（0.32.0，详见 [docs/被扩展说明.md](docs/被扩展说明.md)）：其它插件用
   `ctx.on` 注册两个 cordis 串行事件——`resume-on-restart/before-restart`（重启被调用后、
   真正重启前）与 `resume-on-restart/before-resume`（重启完成后、恢复会话前）。派发按注册
@@ -311,34 +312,56 @@ fail-closed：记录文件缺失（`session-file-missing`）、运行环境 zlib
 `.zstd` 记录都会被判 `zstd-unsupported` 而拦下（fail-closed），无压缩的
 `session.v4.jsonl` 不受影响。
 
-### 会话顶栏开关（0.4.0，仅当前会话生效）
+### 会话顶栏开关（0.4.0 起；0.36.0 起常驻五态、支持给已完成会话补设恢复）
 
 web 端在会话顶栏、「标准模式」标签同一个父容器（slot `conversation.session.header.actions`）
-里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token。显示门控：条目对恢复候选会话渲染
-——即最近活跃列表内的会话（0.10.0 起含手动停止的；0.17.0 起正常结束的会话不再是
-恢复候选、不再显示，见下方 `GET /state` 的 `restoreCandidates`；0.20.0 起列表
-默认不限量、不再有窗口外）；被忽略前缀的会话不渲染任何 DOM：
+里注册兄弟条目 `resume-on-restart`，视觉复用同一套设计 token，**任何会话都显示**
+（0.36.0 起不再按「是否恢复候选」门控隐藏；被忽略前缀的会话不渲染任何 DOM）。
+按钮显示态按优先级从高到低判断，点击统一走 `POST /session-recovery`：
 
-| 状态 | 文案 | 悬停文案 | 行为 |
+| 状态 | 判定 | 文案 | 行为 |
 |---|---|---|---|
-| 正常 | 重启时恢复会话 | 取消→重启时恢复会话 | 点击 → 标记本会话「重启后不自动恢复」，条目变灰 |
-| 已排除 | 已取消恢复（灰色） | 恢复→重启时恢复会话 | 点击 → 取消标记，回到正常态 |
+| `archived` | 会话已归档 | 已归档，重启不恢复（灰显禁用） | 点击无效（`aria-disabled` + 短路）；归档会话不参与恢复，需先在会话列表取消归档 |
+| `registered` | 在 `proactive-restore.json` 有效登记里 | ✓ 重启时恢复（已登记） | 点击 → 取消登记 + 标记为不恢复（want=false） |
+| `excluded` | 在 `excluded-sessions.json` 里 | ✕ 重启时不恢复（已排除） | 点击 → 清除排除 + 登记恢复（want=true） |
+| `auto` | 在自动恢复候选（运行中/最近活跃） | ✓ 重启时自动恢复 | 点击 → 取消恢复（want=false） |
+| `none` | 其余（典型 = 已完成会话） | 重启时恢复 | 点击 → 登记恢复（want=true） |
 
-生效范围**仅当前会话**：排除集合持久化在 `~/.dsh/.resume-on-restart/excluded-sessions.json`
-（`{ "sessions": { "<sessionId>": "<排除时间 ISO>" } }`，上限 1000 条、超出丢最旧），
-重启 DSH 后仍然有效；重启后的恢复流程会跳过被排除的会话（见上方步骤 4）。
+`archived` 覆盖一切；`registered` 与 `excluded` 由同一个入口互斥写入，正常不会同时命中
+（若因外部写入重叠，`registered` 快照按恢复流程的既有口径**剔除被排除的条目**，按钮显示
+`excluded`，不会出现「显示已登记、重启却不恢复」）。`excluded` 也优先于 `auto`——
+恢复候选阶段先剔除被排除的会话。悬停文案只说点击后果（「点击→重启时恢复」/
+「点击→重启时不恢复」），title 说明当前状态与原因。
+
+生效范围**仅当前会话**：取消恢复写入
+`~/.dsh/.resume-on-restart/excluded-sessions.json`
+（`{ "sessions": { "<sessionId>": "<排除时间 ISO>" } }`，上限 1000 条、超出丢最旧）；
+登记恢复写入 `~/.dsh/.resume-on-restart/proactive-restore.json`
+（`{ "<sessionId>": { "at": "<登记时间 ISO>", "title"?: "会话标题" } }`，上限 100 条、
+超出丢最旧；即使会话之后结束，重启后仍会恢复）。重启后的恢复流程先剔除被排除的会话
+（见上方步骤 4），再按归档名单剔除；归档会话无论是否登记都不恢复。
 
 客户端（`lib/client.js`，手写 bundle、仅依赖 baseline 的 react）通过以下插件自有 API 读写状态：
 
-- `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso }, restoreCandidates: { [id]: true } }`。
+- `GET /api/dsh-resume-on-restart/state?ids=<sessionId>` → `{ ok, excluded: { [id]: iso }, restoreCandidates: { [id]: true }, registered: { [id]: { at, activate? } }, archived: { [id]: true } }`。
   `restoreCandidates` 取自宿主内存 `recentSessions` 的实时视图（纯函数 `collectRestoreCandidateIds`），
   0.17.0 起再剔除最后已知状态为正常结束的会话（开机由日志扫描播种、运行期由
   `session/event` 维护的集合，不在请求路径上扫日志），
-  不看排除集合——被排除但仍是候选的会话仍显示灰色开关；当前会话不在其中、字段缺失或请求失败
-  都按「不显示」处理
-- `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`；请求期间防重复点击，失败回滚 UI
+  不看排除集合——被排除但仍是候选的会话照旧显示；0.36.0 起 `ids` 只挑请求的会话
+  （缺省回全集），`registered` / `archived` 与 ws 快照同源（`registered` 已剔除被排除的
+  无效登记）
+- `POST /api/dsh-resume-on-restart/session-recovery`，body `{ sessionId, want: true|false }`
+  （0.36.0 顶栏统一入口）：want=true → 清排除 + 写 proactive 登记（title 拿到才带）；
+  want=false → 删登记（保留其他条目）+ 写排除。任一文件写失败 → `{ ok: false, error }`
+  且不广播（客户端回滚乐观更新）；成功 → 广播 ws 快照并回 `{ ok, sessionId, want, state }`
+- `POST /api/dsh-resume-on-restart/state`，body `{ sessionId, excluded: true|false }`
+  （0.4.0 起的既有入口；待恢复列表的逐行/批量取消仍用它，顶栏 0.36.0 起改用上面的
+  统一入口）；请求期间防重复点击，失败回滚 UI
 - `GET /api/dsh-resume-on-restart/ws-info` → `{ ok, token }`（0.11.0 引入；0.12.0 起
   不再返回 port，见下）
+
+ws 快照（`type: 'state'`）与 GET /state 同口径，0.36.0 起多带 `registered` / `archived`
+两个字段，顶栏据此实时推导五态；多标签页自动对齐。
 
 `sessionId` 由插槽框架注入（session 作用域标准 props，见 `@deepseek-ai/dsh-client-ui-session`
 对 `SessionStandardProps` 的 merge 声明），不使用任何 window 全局。
@@ -867,6 +890,8 @@ system prompt），正文由 `lib/detect.js` 的 `noticeSegments()` 逐行拼出
 # 0.33.0 的冷会话 header 磁盘读取（首帧梯度读取/memo）与冷 subagent 结算口径
 # 0.35.0 的 dsh-im 通知兼容（resolve 全分支/描述符形状/候选集合读写/缺失与旧版
 # 降级/disposer/重复注册可见降级/动态注入接线）
+# 0.36.0 的顶栏常驻开关（五态状态机/快照 registered·archived/新路由
+# POST /session-recovery 的 want 语义/i18n 键集/ResumeToggle 渲染与点击分支）
 npm test
 ```
 
@@ -918,7 +943,15 @@ marker 陈旧 true 被实时 idle 覆盖、marker false 但真实在跑 → true
 `lib/cold-subagent.test.js`（15 用例：冷 subagent 不进 `/restart/info` 与直接恢复候选、
 父会话是候选/被排除/归档/不在窗口/缺 parentSession 五种结算口径且绝不发 resume、
 磁盘判定不了时维持现状留在候选、热会话只认 store、memo 删掉记录后仍按首次判定不再
-读盘，以及 `classifySubagentDisposition` 的五种文案与优先级/脏输入防御），
+读盘，以及 `classifySubagentDisposition` 的五种文案与优先级/脏输入防御）、
+0.36.0 新增 `lib/recovery-state.test.js`（19 用例：五态优先级与 archived 覆盖一切、
+16 种标记组合 host↔client 逐一对齐、点击意图映射、按钮渲染模型（文案/title/灰显/
+禁用/aria-pressed）、i18n `recovery.*` 键集 zh/en 对齐、快照构造器脏输入与
+「被排除的登记不算有效」，以及用极简 react 桩跑真实渲染路径/点击分支：五态文案与
+aria、want 推导 + `POST /session-recovery` 请求体、归档态零请求），`lib/routes.test.js` 新增 4 用例（`POST /session-recovery`
+的 want=true/want=false 对两个状态文件的影响、参数校验与 403 围栏、
+`GET /state` 新字段与 ids 过滤），`lib/proactive-restore.test.js` 新增 1 用例
+（已完成会话 + 主动登记 → 仍进入恢复候选且不受 restoreMax 截断），
 另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。

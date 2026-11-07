@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.36.0] - 2026-11-07
+
+### Added
+
+- **会话顶栏「重启时恢复」开关常驻 + 五态，支持给已完成的会话补设恢复**。用户需求：
+  「主对话框主体那的重启时恢复会话的按钮，要固定显示，状态根据情况判断，主要是方便给
+  已完成的会话设置重启后恢复」。此前按钮只为「自动恢复候选」渲染、且只有正常/已排除
+  两态——已完成的会话根本看不到按钮，无法补设恢复。
+  - **lib/recovery-state.js（新增纯函数模块）**：`recoveryStateOf` 按优先级
+    archived > registered > excluded > auto > none 推出显示态；`recoveryWantOf`
+    推出点击意图（none/excluded → 登记 `true`、registered/auto → 取消 `false`、
+    archived → `null` 不请求）；`buildRegisteredSnapshot` / `buildArchivedSnapshot`
+    产出快照两个新集合（纯函数、脏输入防御、绝不抛错）。
+  - **快照新增两个字段（ws 与 GET /state 同口径）**：`registered`
+    （proactive-restore.json 内存视图的有效登记 `{ [id]: { at, activate? } }`）与
+    `archived`（`{ [id]: true }`，读 `workspaceRegistry.archivedSessionIds`，读失败
+    按空）。`GET /state?ids=` 只挑请求的 id（缺省回全集）；两份快照同源，首帧查询与
+    ws 广播不会互相打架。
+  - **新路由 `POST /session-recovery`**（body `{ sessionId, want: boolean }`，围栏 /
+    body 上限 / 响应风格照 `POST /state`）：want=true → 从 excluded-sessions.json 删
+    该 id（若存在）+ 写 proactive 登记 `{ at, title? }`（`capProactiveRestore` 裁剪，
+    title 走 `sessionTitleLookup` 拿到才带）；want=false → 删 proactive 登记（保留
+    其他条目）+ 写排除集合（同一 1000 条上限裁剪）。任一文件写失败回
+    `{ ok:false, error }` 且不广播（客户端提示并回滚乐观更新），成功广播 ws 快照并回
+    `{ ok, sessionId, want, state }`（`state` 由 `recoveryStateOf` 回算）。
+  - **既有恢复语义不变**：排除优先于主动登记（候选阶段 `filterExcludedCandidates`
+    先剔除）、归档过滤优先于两者（`filterArchivedRestoreCandidates` 在排除之后）；
+    新开关只改两个既有 store 的内容，不新增恢复通道。
+  - **客户端（lib/client.js）**：ResumeToggle 常驻（不再按候选门控返回 null，字段
+    拿不到也稳定落在 none），状态同步订阅快照新字段；五态文案与 title 改走 i18n 成组
+    键 `recovery.label.*` / `recovery.title.*`（zh/en 键集对齐，废弃原硬编码
+    LABEL_NORMAL/LABEL_EXCLUDED 常量）；点击统一 `POST /session-recovery`（want 由
+    状态机推导），乐观更新 + 失败回滚（照既有 toggle 风格）；归档态灰显禁用
+    （`aria-disabled` + 点击短路，布局不变、title 说明可读）；纯函数
+    `recoveryStateOf` / `recoveryWantOf` / `recoveryButtonView` / `stateOfSession`
+    从工厂导出供单测。
+  - **测试**：新增 `lib/recovery-state.test.js` 19 用例（五态优先级、archived 覆盖
+    一切、16 种标记组合 host↔client 逐一对齐、点击意图、按钮渲染模型、i18n 键集
+    对齐、快照构造器脏输入、ResumeToggle 真实渲染路径与点击分支）；`lib/routes.test.js` 新增 4 用例（want=true/false 对
+    两个状态文件的影响、参数校验与 403 围栏、GET /state 新字段与 ids 过滤）；
+    `lib/proactive-restore.test.js` 新增 1 用例（已完成会话 + 主动登记 → 仍进入恢复
+    候选且不受 restoreMax 截断）。`npm test` 全绿。
+
 ## [0.35.0] - 2026-11-07
 
 ### Added
