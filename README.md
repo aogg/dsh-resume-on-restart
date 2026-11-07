@@ -32,7 +32,9 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    （0.20.0 起最近活跃列表默认不限量，暂停会话本就在列表里）；暂停与重启双向互斥（同时只允许一个进行）
 - 🕒 **待恢复列表与恢复结果对账**（0.13.0，0.14.0 逐行/批量取消恢复，0.16.0 进入选项卡即展示，0.17.0 手动刷新，0.18.0 按工作区分组，0.21.0 等待态可视化强化，0.24.0 对账视图不再被列表遮蔽 + 进页面即刷新，0.25.0 会话行点击跳转 + 对账视图按工作区分组）：
    **进入设置弹窗「重启」选项卡即自动展示「待重启恢复会话列表」**（会话标题为主、
-   完整 id 悬停提示 + 最后活跃时间 + 运行中标记；**0.18.0 起按会话所属工作区
+   完整 id 悬停提示 + 最后活跃时间 + 运行中标记（**0.32.1 起该标记取活 agent 的实时
+   `status`**，不再是 marker 里的「最后已知」快照——被重启打断且此后从未再运行的会话
+   不会再显示「● 运行中」）；**0.18.0 起按会话所属工作区
    分组展示**——组头为工作区完整路径、未知工作区组恒排最后，组间/组内按最后
    活跃时间新 → 旧；**0.25.0 起每个会话行支持点击跳转**——非 waiting 阶段行容器
    绑 onClick，走 dsh 官方 `uiWorkspace.openSession(sessionId)` 打开该会话，成功后
@@ -145,7 +147,8 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
 - 🎯 **活动追踪**（0.3.0 修复）：运行期间通过 cordis 真实事件（`agent/status`、
   `agent/inbox/inserted`、`agent/assistant-stream`）追踪最近活跃会话列表 `recentSessions`
   （0.20.0 起默认不限量——历史上活跃过的会话全部保留为恢复候选，
-  正整数 `trackMax` 可设回数量上限；条目含 `running` 标记：最后已知是否运行中，由 `agent/status` 维护）
+  正整数 `trackMax` 可设回数量上限；条目含 `running` 标记：最后已知是否运行中，由 `agent/status` 维护
+  ——0.32.1 起仅供重启日志与恢复流程参考，界面徽标改取活 agent 实时状态）
 - 💾 **节流落盘**：活动时 5 秒内合并一次写盘（不再只靠 SIGTERM），非优雅退出也不丢状态
 - ✅ **兼容 DSH Desktop**：只依赖 cordis ctx 的 `agents` 服务与事件，不 import 任何 `@deepseek-ai/dsh-*` 内部包，可在 DSH Desktop 打包环境（app.asar）运行
 - 手动结束和崩溃，两者之后都会触发自动恢复
@@ -473,7 +476,8 @@ instanceId 基线判定是豁免区，一行未动）：
    点击时刻的最新口径）；POST `/restart` 成功进入 waiting 阶段后展示
    「待重启恢复会话列表」——每行 = 会话标题为主（省略号截断、全文在元素 title
    属性悬停可见；标题缺失退回截断 id 并弱化显示）+ 最后活跃本地时间（at 缺失
-   显示 —）+ `● 运行中` 标记；完整会话 id 一律放在行容器的 title 属性做悬停
+   显示 —）+ `● 运行中` 标记（0.32.1 起取活 agent 的实时 status，`agents` 服务
+   不可用时回退 marker 最后已知值）；完整会话 id 一律放在行容器的 title 属性做悬停
    提示，不再作为行主文本；列表空显示「无待恢复会话」。**0.25.0 起每个会话行
    支持点击跳转**：非 waiting 阶段行容器绑 onClick → `jumpToSession(row.id,
    close)`——走 dsh 官方 `uiWorkspace.openSession(sessionId)` 打开该会话（客户端
@@ -850,7 +854,11 @@ client bundle：localStorage 存根防御式读写、boot 匹配——restartId 
 不产生任何重启工件；before-resume 取消 → 只落 boot + resume-cancel、无逐会话结算；
 抛错 fail-closed；放行不写 resume-cancel）与 `lib/notice.test.js`（提示词分段 key 与
 `buildNotice` 逐字一致、zh/en 的 `notice.when.*` 齐全、tab 改名、`groupEntries` 收集
-`resume-cancel`、`resumeCancelText` 降级口径），均无 e2e、不起服务。另有
+`resume-cancel`、`resumeCancelText` 降级口径）与 0.32.1 新增的
+`lib/running-badge.test.js`（`/restart/info` 运行徽标取活 agent 实时 status：
+marker 陈旧 true 被实时 idle 覆盖、marker false 但真实在跑 → true、
+`agents.list()` 空数组是有效数据不回退、`agents` 服务缺失 / `list()` 抛错 / 形状不合
+一律回退 marker 最后已知值且路由照旧 200），均无 e2e、不起服务。另有
 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。

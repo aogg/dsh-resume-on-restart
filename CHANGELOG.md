@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.32.1] - 2026-11-07
+
+### Fixed
+
+- **待重启恢复列表的运行徽标取实时状态**（实际症状：列表里一个早已不在运行的会话仍显示
+  「● 运行中」）。`GET /restart/info` 候选明细的 `running` 此前读 `marker.recentSessions`
+  的「最后已知」快照——它只在 `agent/status` 事件到来时更新，因此会话被重启打断（turn 开着
+  被 kill）、之后恢复又失败（宿主以 `owned by subagent routing` 拒绝 subagent 会话即实例）时
+  该标记永久停在 `true`，界面就把一个此后从未运行过的会话显示成运行中。
+  现在改为查活 agent 的实时 status（`ctx.get('agents').list()` → `status === 'running'`，
+  与「暂停所有会话」、守门自动重启同一个 `selectRunningAgentIds` 枚举口径）：
+  - marker 说 `true` 但活 agent 是 idle / 根本不在名单里 → `running:false`；
+  - marker 说 `false` 但活 agent 正在跑 → `running:true`；
+  - `agents` 服务探不到（旧宿主 / 服务缺失 / `list()` 抛错 / 返回非数组）→ **回退** 0.13.0
+    口径（marker 最后已知值），降级行为逐字不变，路由照旧 200；
+  - `agents.list()` 返回空数组是**有效数据**（此刻没有会话在运行，例如刚开机尚未恢复任何
+    会话），一律 `running:false`，不回退到陈旧的 marker 值。
+  候选集合与 `at` / `title` / `workspace` / `source` / `activate` 等其余字段口径完全不变；
+  恢复流程（`running:true` 免扫描直通正常结束门）仍读 boot 快照里的 `running`，不受影响。
+  新增 `lib/running-badge.test.js`（5 个接线用例）钉住上述四条口径。
+
 ## [0.32.0] - 2026-11-07
 
 ### Added
