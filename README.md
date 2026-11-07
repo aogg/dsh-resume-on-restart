@@ -17,7 +17,9 @@ DSH 插件：检测 DSH 服务重启后，**自动恢复重启前活跃的会话
    （0.9.1 起逐个尝试全部候选，不再"首个成功即停"）；**0.17.0 起「正常结束」的
    会话不再恢复**（会话日志最后一条真实 turn/end `reason.kind === "completed"`，
    由重启后的日志扫描判定——文件缺失/解压失败/解析异常一律保守恢复，宁可多恢复）；
-   subagent routing 持有的子代理会话按其**主会话祖先代理恢复**（`result: 'subagent'`，不算失败）；
+   subagent routing 持有的子代理会话按其**主会话祖先代理恢复**（`result: 'subagent'`，不算失败；
+  0.33.0 起**冷会话**——本进程没有活 agent、会话记录只在磁盘上的会话——同样能识别，
+  见下文「subagent 会话代理恢复」）；
    依赖 DSH Host 的 `sessionController` 服务，缺失/失败时自动降级为通知主会话，
    开机无任何 live agent 时（0.9.1）升级经 sessionController 恢复最近活跃会话投递，
    不再 `no target agent after wait`
@@ -209,15 +211,30 @@ dsh plugin --profile desktop add <本目录路径>
      成功投递的通知含"已自动恢复重启前活跃的会话 xxx（最后活跃于 ...）"。
      **每个候选都会被尝试**（0.9.1：不再在第一个候选投递成功后提前结束——那会让
      其余候选会话既不恢复也无任何日志，0.5.0 全量恢复语义名存实亡）。
-   - **subagent 会话代理恢复**（0.9.1）：`header.origin === 'subagent'` 的候选被
-     subagent routing 持有，宿主 `resolveAgent` 一律拒绝（`is owned by subagent
-     routing`，正确通道是经父会话/subagent delivery），直接恢复必然失败。候选阶段
-     用 session store header（防御式探测，同归档过滤口径）识别这类候选，结算为
-     `result: 'subagent'`（**不算失败**），并把其**最近的主会话祖先**（沿
+   - **subagent 会话代理恢复**（0.9.1，0.33.0 起覆盖冷会话）：**subagent 会话不能被重启
+     恢复，只能由父会话代理**——`header.origin === 'subagent'` 的候选被 subagent routing
+     持有，宿主 `resolveAgent` 一律拒绝（`is owned by subagent routing`，正确通道是经
+     父会话/subagent delivery），直接恢复必然失败。候选阶段按会话 header 识别这类候选，
+     结算为 `result: 'subagent'`（**不算失败**），并把其**最近的主会话祖先**（沿
      `parentSession` 上溯）作为代理恢复目标并入候选——用户的工作经 lead 会话继续；
-     祖先被用户排除/已归档时不代理（尊重用户意图，安静结算）。session store 缺失
-     时无法预识别（退化 = 现状），由 `resolveAgent` 的 RemoteError 在恢复循环里
-     兜底结算为 `result: 'subagent'`（绝不记 failed）。
+     祖先被用户排除/已归档时不代理（尊重用户意图，安静结算）。五种结算文案
+     （`covered by candidate session <parent>` / `ancestor session <parent> excluded by
+     user` / `… is archived` / `resume delegated to ancestor session <parent>` /
+     `no resumable ancestor session found`）由纯函数 `classifySubagentDisposition`
+     （`lib/detect.js`）判定。
+     **header 读取链（0.33.0）**：① 热会话——session store 的 `get(id).header`
+     （0.9.1 口径逐字不变）；② 冷会话——store 里根本没有条目（`get(id)` 返回
+     `undefined`），回退读磁盘会话记录的首帧（`lib/session-scan.js` 的
+     `readSessionHeaderFromDisk`：只解第一帧、4KB 起倍增到 1MB 上限的读取梯度、
+     未压缩 `session.v4.jsonl` 只读首行、判定不了就 unknown 且绝不抛错；进程内 memo
+     只读一次盘）。于是冷 subagent 会话不再被当成普通候选直接 `resumeSession`
+     （此前必然拿到 `owned by subagent routing` 并结算成指令式失败），也**不再出现在
+     `GET /restart/info` 的待恢复列表**里。两级都判定不了时**维持现状**（候选照旧保留，
+     由 `resolveAgent` 的 RemoteError 在恢复循环里兜底结算为 `result: 'subagent'`，
+     绝不记 failed）——绝不因为读盘失败把候选当 subagent 丢掉。
+     术语（本 README 只定义一次，后文沿用简称）：**冷会话** = 本进程没有活 agent、会话
+     记录只落在磁盘上的会话（如重启前被打断、恢复前尚未加载进 store 的会话）；
+     **热会话** = session store 里有活 Session 的会话。
    - **回退**：所有候选都失败/被排除（0.17.0 起候选全部正常结束时不回退——安静收尾，
      正常收工的会话无需继续；或 sessionController 缺失/关闭恢复）时，轮询等待主 agent 出现
      （最长 20 秒），投递信息性消息：
@@ -575,6 +592,8 @@ title 字段，绝不阻塞路由。0.18.0 起明细行再加 `workspace` 字段
 `running` 回查 `recentSessions`（查不到 = false））。归档剔除 + subagent
 拆分 + 0.17.0 正常结束剔除（`visibleRestoreCandidateIds`：开机日志扫描播种、运行期
 `session/event` 维护，与 `GET /state`、恢复流程同口径）的候选口径见上文。
+**0.33.0 起 subagent 拆分对冷会话同样生效**（header 走 store 优先 + 磁盘首帧回退）：
+冷 subagent 会话不再出现在本列表里（此前会以普通候选出现，点了恢复必然失败）。
 对账匹配/归组逻辑抽成
 可测纯函数（`matchPendingBoot` / `collectSettlementsBySession` 等），见
 `lib/pending-restore.test.js`。0.17.0 起待恢复列表标题行带「刷新」按钮（preview /
@@ -816,7 +835,8 @@ system prompt），正文由 `lib/detect.js` 的 `noticeSegments()` 逐行拼出
 # （主动注册优先去重/命中排除丢弃/总是恢复豁免 restoreMax 截断）/source 字段
 # 归一化与合并透传/技能徽标；0.22.0 规划中：auto-restart 纯函数
 # （归一化/读/写/删/幂等合并/完成判定）与 filterCompletedCandidates 的
-# bypassIds 直通（缺省向后兼容）单测由测试角色补齐）
+# bypassIds 直通（缺省向后兼容）单测由测试角色补齐）、
+# 0.33.0 的冷会话 header 磁盘读取（首帧梯度读取/memo）与冷 subagent 结算口径
 npm test
 ```
 
@@ -858,8 +878,18 @@ client bundle：localStorage 存根防御式读写、boot 匹配——restartId 
 `lib/running-badge.test.js`（`/restart/info` 运行徽标取活 agent 实时 status：
 marker 陈旧 true 被实时 idle 覆盖、marker false 但真实在跑 → true、
 `agents.list()` 空数组是有效数据不回退、`agents` 服务缺失 / `list()` 抛错 / 形状不合
-一律回退 marker 最后已知值且路由照旧 200），均无 e2e、不起服务。另有
-`tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
+一律回退 marker 最后已知值且路由照旧 200），均无 e2e、不起服务。0.33.0 新增
+`lib/session-header.test.js`（13 用例：冷会话 header 的磁盘首帧读取——
+`SESSION_HEADER_READ_SIZES` 4KB 起倍增/上限 1MB、首行 JSON → header 的两种形状、
+真实临时多帧 zstd（首帧 header + 后续记录 + 伪 header）只解第一帧、首帧压缩后 >4KB
+时按梯度从 4KB 试到 16KB、截断/非 zstd 数据的 unknown、未压缩文件只取首行、无
+`zlib.zstdDecompressSync` 环境下 zstd 形态降级为 unknown 而未压缩形态照常、id 非法
+与文件缺失的 unknown、**10MB 文件注入读盘点只被请求一次 4096 字节**的证据）与
+`lib/cold-subagent.test.js`（15 用例：冷 subagent 不进 `/restart/info` 与直接恢复候选、
+父会话是候选/被排除/归档/不在窗口/缺 parentSession 五种结算口径且绝不发 resume、
+磁盘判定不了时维持现状留在候选、热会话只认 store、memo 删掉记录后仍按首次判定不再
+读盘，以及 `classifySubagentDisposition` 的五种文案与优先级/脏输入防御），
+另有 `tools/smoke.mjs` 手动冒烟：mock cordis ctx 启动插件、走查
 GET 路由与 pid1-exit 分支（stub appExit；`DSH_HOME` 重定向到临时目录，绝不触碰真实
 `~/.dsh`）。
 

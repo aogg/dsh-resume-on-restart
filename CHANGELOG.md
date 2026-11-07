@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.33.0] - 2026-11-07
+
+### Fixed
+
+- **subagent 会话不能被重启恢复，只能由父会话代理——冷 subagent 会话此前却被当成普通
+  候选直接 resume**（实际症状：`restarts.ndjson` 里该会话 `result: 'subagent'` 但
+  `error` 是 `resume failed: RemoteError: … is owned by subagent routing`，即
+  「指令式失败」而不是「由父会话代理」；实测两次 boot 的
+  `9ae5a36c-f8a4-47ab-a576-8b26bb3498fb`、`ebe218d8-326f-4e2e-a3de-0c21fdce8e09`）。
+  根因：`sessionHeaderLookup()` 只查 `ctx.reflect.get('sessions').get(id).header`，
+  而宿主 sessions store 只对**热会话**有条目；**冷会话**（定义：本进程没有活 agent、
+  会话记录只落在磁盘上的会话，例如重启前被打断、恢复前尚未加载进 store 的会话）
+  `get(id)` 返回 `undefined` → 拿不到 header → `partitionSubagentCandidates` 认不出
+  subagent → 当普通候选 `resumeSession` → 宿主以 `is owned by subagent routing` 拒绝。
+  磁盘上其实能判（记录首行就是 header：`{"type":"session",…,"parentSession":…,
+  "origin":"subagent","delegationDepth":1}`），只是 store 拿不到。修复：
+  - **`lib/session-scan.js` 新增 `readSessionHeaderFromDisk(sessionsRoot, sessionId)`**
+    （还有纯函数 `sessionHeaderFromLine`、常量 `SESSION_HEADER_READ_SIZES`）：定位复用
+    `findSessionRecordFile`；`.zstd` 用 `zlib.zstdDecompressSync`（`typeof === 'function'`
+    探测，node < 23.8 没有 → `unknown/zstd-unsupported`，绝不抛错）**只解第一帧**；
+    **限制读取量**——从 4KB 起倍增尝试（4/16/64/256KB…上限 1MB），首帧可解即停，绝不整
+    文件读（会话记录可达数十 MB，`/restart/info` 会逐候选调用）；未压缩
+    `session.v4.jsonl` 只读首行；文件缺失 / 解压失败 / JSON 坏 / 首行非对象 / id 非法
+    （含 `/`、`\`、`..`、超长）→ 一律 `{ status: 'unknown', reason }`（口径与仓库既有
+    扫描一致），绝不抛错。
+  - **`lib/index.js` 的 `sessionHeaderLookup()` 改为「store 优先 + 磁盘回退」**，并加
+    **进程内 memo**（`id → header|null`，**只缓存读盘结果**——热会话每次照旧走 store，
+    行为逐字不变；`/restart/info` 逐候选调用、boot 恢复再查一次，不 memo 就会反复
+    open/pread/解压）。
+  行为口径（每条都有单测）：
+  1. 冷 subagent 会话不再进入「直接恢复」候选，也不再出现在 `GET /restart/info` 的
+     待恢复列表（`directRestorableCandidates` 同一条链自动生效）；
+  2. 父会话是候选 → 结算 `subagent session; covered by candidate session <parent>`，
+     不直接 resume；
+  3. 父会话被用户排除 → `subagent session; ancestor session <parent> excluded by user`，
+     **绝不发 resume**；
+  4. 父会话归档 → 同款 archived 文案（`… ancestor session <parent> is archived`；
+     0.9.0 归档过滤先剔同 lineage 的候选，故实际链路常先结算 `archived`，该文案是
+     lineage 走不通时的防御式兜底）；
+  5. 父会话不是候选（不在窗口）→ 走既有 proxies 代理恢复（0.9.1 语义不变）；
+  6. header 有 `origin:'subagent'` 但缺/非法 `parentSession` →
+     `subagent session; no resumable ancestor session found`；
+  7. 磁盘也判定不了 → **维持现状**（留在候选里，由宿主 RemoteError 兜底）——
+     绝不许因为「读盘失败」把候选当 subagent 丢掉。
+  结算的五种 mode/文案抽成 `lib/detect.js` 的纯函数 `classifySubagentDisposition`
+  （`covered` / `excluded` / `archived` / `delegated` / `none`，优先级与历史文案逐字
+  一致），供逐条单测。
+- 术语：**冷会话** = 本进程没有活 agent、会话记录只落在磁盘上的会话（如重启前被打断、
+  恢复前尚未加载的会话）；**热会话** = session store 里有活 Session 的会话。该定义
+  写在 `lib/session-scan.js` 模块头、README「subagent 会话代理恢复」段与本条 CHANGELOG。
+
+### Tests
+
+- 新增 `lib/session-header.test.js`（13 用例）：读取量梯度常量、首行 JSON → header
+  的两种形状、真实临时多帧 zstd（首帧 header + 后续记录 + 伪 header）只解第一帧、
+  首帧压缩后 >4KB 时 4KB 读不出→按梯度到 16KB 成功、截断首帧/非 zstd 数据 →
+  `unknown/zstd-decode-error`、未压缩文件只取首行、无 `zlib.zstdDecompressSync` 环境
+  下 zstd 形态 `unknown/zstd-unsupported` 而未压缩形态照常、id 非法与文件缺失、
+  **10MB 文件注入读盘点只被请求一次 4096 字节**（只读前几 KB 的证据）。
+- 新增 `lib/cold-subagent.test.js`（15 用例）：mock cordis ctx + 临时 `DSH_HOME`、
+  磁盘上写真实会话记录（首行 header），覆盖上面七条口径、store 优先（热会话只认
+  store，磁盘写 subagent 也不影响）、memo（删掉会话记录后第二次 `/restart/info` 仍按
+  首次读到的 header 判定，同用例内用「从没读到过记录的会话照旧是候选」作对照），以及
+  `classifySubagentDisposition` 的五种文案/优先级/脏输入防御。
+
 ## [0.32.1] - 2026-11-07
 
 ### Fixed
