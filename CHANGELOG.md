@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.34.0] - 2026-11-07
+
+### Added
+
+- **恢复结果对账保留最近 10 轮（含刚结束的这一轮）**：此前「重启」tab 的
+  「上次重启（时间）的恢复结果：x/y 已恢复」只呈现最近一轮——数据源是重启前写入
+  `localStorage` 的单条存根（key `dsh-ror-pending-restore`）+ 重启后 `matchPendingBoot`
+  匹配到的单个 boot，更早的恢复结果虽然都在服务端 `restarts.ndjson` 里，界面上却看不到。
+  改动：
+  - **数据来源**：对账优先直接读 `GET /restarts` 的完整记录（宿主上限 200 条，足够覆盖
+    10 轮），新增纯函数 `bootGroupsLatest(records, limit=10)`——按 `bootAt` 分组、只保留
+    「有 restore 记录」的 boot 组、按时间倒序、取最近 10 组，脏输入/非法 limit 安全兜底；
+    客户端 `localStorage` 存根逻辑保留，仅作「刚重启、`/restarts` 尚未写全」时的兜底补位
+    （既有 `matchPendingBoot` 语义不改），由 `settlementRounds` 把存根轮次合并进列表
+    （与历史同一 boot 时原位合并、不重复，存根 bootAt 为空按最新置顶）。
+  - **UI**：对账区渲染为轮次列表（最多 10 项、按重启时间倒序）。首项 = 最新一轮，
+    保持既有卡片语义「上次重启（时间）的恢复结果：x/y 已恢复」与全部结算徽标
+    （resumed/failed/excluded/archived/subagent/skipped-*/no-activate/pending/unsettled
+    等），默认展开；其余轮次折叠为一行摘要「`<时间> · x/y 已恢复`」，点击/回车展开同一套
+    明细行（会话标题或短 id 回落、结果徽标、行可点跳转、完整 id 的 title 提示全部保留）。
+    历史轮次的 restore 记录不带 `workspace`，明细直接平铺（不塞「未知工作区」组头）；
+    存根轮次仍按工作区分组（0.25.0 语义）。
+  - **既有语义保留**：0.24.0 对账视图不被待恢复列表遮蔽（preview/confirm/waiting/失败回
+    idle 各阶段列表在上、对账在下）；0.13.0 待结算短轮询只在存根轮次仍有未结算候选时跑
+    （3s × 最多 20 次，全部结算即停），历史轮次天然已结算不轮询；「上次重启无法恢复」
+    第三块维持现状；无任何轮次时不渲染（维持现有空态、不填充假数据）。
+  - **测试**：`bootGroupsLatest` / `settlementRounds` 与 `SETTLE_ROUNDS_LIMIT` 从工厂导出，
+    `lib/pending-restore.test.js` 新增 8 个用例（多轮倒序归组、乱序输入、同 boot 多
+    restore、上限 10/非法 limit、无 restore 剔除、resume-cancel/脏输入、存根兜底与匹配合
+    并、无存根 10 轮）；新增 i18n key `settle.expandHint` / `settle.collapseHint`（zh/en）
+    与样式类 `.dsh-ror-settle-round*`。
+
 ## [0.33.0] - 2026-11-07
 
 ### Fixed
