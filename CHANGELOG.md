@@ -1,5 +1,85 @@
 # Changelog
 
+## [0.37.0] - 2026-11-09
+
+### Added
+
+- **第三个扩展点 `resume-on-restart/session-title`：会话标题链式覆盖**。用户需求：
+  「标题扩展点：cordis 串行事件（HOOK_EVENTS 里应已有 session-title），payload
+  { id, title }（默认解析结果，可为空），处理器返回 { title: '非空字符串' } 覆盖，
+  链式后者覆盖前者，空/undefined 不覆盖；接线在标题解析唯一出口；单个处理器等待
+  上限沿用 hookTimeoutMs 语义（超时回退当前标题，不挂住下发）」。
+  - **lib/hooks.js**：新常量 `SESSION_TITLE_HOOK = 'resume-on-restart/session-title'`
+    （进 `HOOK_EVENTS.sessionTitle`，包根 re-export）；`normalizeSessionTitleOverride`
+    （只认 `{ title: '非空字符串' }` 对象形式，裸字符串/空串/其它形状一律「不覆盖」，
+    契约窄而清晰）；`buildSessionTitlePayload`（冻结 payload `{ event, plugin, phase,
+    id, title }`，phase 区分 restore-record / settle-backfill 场景）；
+    `runSessionTitleChain`（向事件总线 `ctx.events.dispatch('emit', …)` 枚举监听器、
+    按注册顺序逐个 await 归约——后者拿到前者结果并可覆盖前者；不用 `ctx.serial` /
+    `ctx.waterfall`，因为前者每步收到同一份参数、后者是洋葱模型，都做不了归约；
+    极旧宿主无 `events.dispatch` 时降级 `ctx.serial` 的 bail 语义：第一个覆盖值生效）。
+  - **fail-open 口径（与 before-restart / before-resume 的 fail-closed 相反）**：
+    标题只是展示数据，处理器抛错 / 超时（单处理器上限 = 配置 `hookTimeoutMs`，默认
+    10s）只 `console.warn`、按「不覆盖」继续跑下一个处理器，绝不阻塞恢复流程与
+    /restarts 路由下发；超时回退当前标题。
+  - **lib/index.js `resolveSessionTitle`（标题解析唯一出口）**：热路径
+    `sessionTitleLookup`（sessionProjections 投影 → record.title → header.title）→
+    冷路径 `readSessionTitleFromProjCache`（投影缓存只读探测）→ 扩展点链；接线只此
+    一处，写 restore 记录与下发补齐共用。
+  - **lib/session-scan.js（冷会话兜底，只读绝不写）**：`sessionTitleFromProjCacheText`
+    / `readSessionTitleFromProjCache`——DSH 自己的会话投影缓存
+    `<DSH_HOME>/storages/session_projcache/sessions/<id>.json` 只读解标题（实测形状
+    `record.rows.title.val`；id 缺 `session-` 前缀按该前缀再试一次；文件缺失/损坏/
+    形状不对一律 null 降级，与 workspace.json 只读回退同一先例口径）。
+  - **文档**：docs/被扩展说明.md 新增第 8 节（触发时机 / payload / 返回值 / 链式
+    语义 / 超时行为 / 最小示例），原有 8~10 节顺延为 9~11。
+  - **测试**：新增 `lib/session-title.test.js` 13 用例（覆盖值归一化、payload 形状
+    与冻结、链式覆盖与逐步 payload、抛错/超时 fail-open、极旧宿主降级、包根
+    re-export 同源）；`lib/session-scan.test.js` 新增 5 用例（实测形状解析、脏输入
+    null、磁盘命中与前缀回退、损坏缓存、非法 id/ home 绝不抛错）。
+
+### Changed
+
+- **「恢复结果对账」升级为两列并排表格（重启前记录 | 重启后恢复）**。用户需求：
+  「上次重启（时间）的恢复结果卡片：重启前记录的会话、重启后恢复的结果，同一张
+  表格并排显示（每行一个会话：重启前记录列 | 重启后恢复列）；只有单侧数据的行
+  照常显示、缺侧显示「—」，不得丢行；沿用行可点跳转、结算徽标、完整 id 的 title
+  提示、分组、x/y 计数行与卡片标题语义；zh/en i18n 成对」。
+  - **lib/client.js `settlementRounds` 行形状升级为 `{ id, before, after }`**：
+    `normalizeSettleBefore` / `normalizeSettleAfter` 两个新纯函数（「拿到才带」口径，
+    脏输入安全）；行集合 = 恢复结果 ∪ 重启前记录——restore 行在前（既有顺序），
+    boot 记录 `runningSessions` 里没有 restore 记录的会话垫在后面（崩溃中断等半程
+    轮次里「重启前记录了却从未结算」的会话由此可见，不得丢行）；存根轮次同款并集
+    （存根 candidates 在前、restore-only 垫后）；x/y 计数口径不变（total = 行数、
+    resumed = after.result === 'resumed'）；存根候选随存根多带 source / activate。
+  - **lib/client.js `renderSettlementRow` / `renderSettlementRows` 两列渲染**：表头
+    `settle.colBefore` / `settle.colAfter` + 每会话一行（新增 i18n 键 zh/en 成对，
+    另有 `settle.restoredAt`）；左列 = 会话标题/短 id（标题取 before ∪ after 两侧
+    并集）+ 最后活跃时间 + 徽标（● 运行中 / 技能注册 / 注册·不激活，与待恢复列表
+    同一套），before 缺失时该行元信息显示「—」；右列 = 结算徽标（全集与配色不变）
+    + 恢复时间（缺失「—」）+ failed error 摘要，after 缺失维持既有待结算/未结算
+    徽标语义（本身就是「还没有恢复记录」）；行可点跳转、完整 id title 提示、按
+    工作区分组、折叠摘要、卡片标题语义全部保留；样式类 `.dsh-ror-settle-*`。
+  - **测试**：`lib/pending-restore.test.js` 行形状断言更新 + 新增 4 用例（历史轮次
+    并集不丢行、存根轮次 restore-only 垫行、normalizeSettleBefore / After 脏输入）。
+
+- **restore 记录带会话标题，历史轮次惰性补齐**。用户需求：「恢复结果里的会话要
+  显示标题（现在缺失退 shortId）。落点建议已由 WIP 实现：宿主写 restore 记录时
+  探测 title + 下发（info/WS）时对历史缺 title 记录惰性补齐（复用
+  lib/session-scan.js，「拿到才带」口径，不加轮询、不加独立端口）；核对补齐逻辑
+  真的对历史轮次生效」。
+  - **lib/index.js `logRestoreRecord`**：全部 restore 记录写入点（resumed / failed /
+    excluded / archived / subagent / skipped-no-human-prompt / skipped-budget /
+    skipped-service-timeout / skipped-completed / no-activate）统一改走该函数，写前
+    经唯一出口解析标题，拿到才带（'' 一律不带 title 字段，ndjson 条目形状与
+    0.36.0 及更早完全兼容）。
+  - **lib/index.js `backfillRestoreTitles`（GET /restarts 下发通道）**：下发前对缺
+    title 的 restore 记录逐条惰性补齐（同 id 去重只解析一次；历史记录**不回写
+    文件**，只在本次响应里补，拿到才带、其余原样透传；无任何可补条目时零拷贝返回
+    原数组）——历史轮次的对账视图由此显示标题，对真实历史 restarts.ndjson 生效。
+  - **测试**：`lib/routes.test.js` 新增 1 用例（缺 title 补齐、已有 title 不覆盖、
+    同 id 多条只解析一次且都补上、boot 条目原样透传不新增字段）。
+
 ## [0.36.0] - 2026-11-07
 
 ### Added
