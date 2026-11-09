@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.38.0] - 2026-11-09
+
+### Added
+
+- **对账表格新增「所在工作区」列（工作区名称 + 绝对路径）**。用户需求：
+  「上次重启（…）的恢复结果」还要加个**所在工作区**的字段，字段里有**工作区
+  名称**和**绝对路径**。
+  - **lib/client.js**：对账表格由两列改三列网格（重启前记录 ｜ 所在工作区 ｜
+    重启后恢复）。每行（每个会话）一个工作区值，before/after 两列共享同一行的
+    中间单元格：工作区名称 = 绝对路径的 basename（主文本），绝对路径在其下
+    小字展示（三级灰、省略号截断），全文在单元格 title 属性悬停可读——风格
+    对齐既有 workspace 小字惯例（0.18.0 分组头全文在 title、0.30.0
+    `.dsh-ror-reg-ws` 小字截断）；工作区未知/空显示「—」。既有交互不变：
+    行点击跳转、结算徽标、按工作区分组（存根轮次）、x/y 计数、轮次折叠全部
+    原样。新增纯函数 `settleRowWorkspace`（行级 before ∪ after 取值：before
+    优先——存根口径已有不覆盖；after 兜底——历史轮次的补齐落在 restore 侧）
+    与 `workspaceBasename`（绝对路径 → basename，兼容 / 与 \ 分隔符与结尾
+    分隔符），均从工厂导出；i18n 新增 `settle.colWorkspace`（zh「所在工作区」/
+    en「Workspace」，键集两侧对齐）；样式类新增 `.dsh-ror-settle-ws*`。
+  - **lib/index.js（数据三来源对齐 0.37.0 的 title 链路）**：① 存根候选
+    （localStorage）0.25.0 起本就带 workspace，直接进 before 侧行数据（既有
+    口径）；② `logRestoreRecord` 写 restore 记录时顺带经 `sessionWorkspaceLookup`
+    同一链路（workspaceRegistry sessionIds 直映射 → workspace.json 只读回退 →
+    slug 正解匹配）防御式探测 workspace，拿到才带（'' 一律不落字段，与 title
+    同款口径，绝不影响结算落盘）；③ GET /restarts 下发时新增
+    `backfillRestoreWorkspaces` 对历史缺 workspace 的 restore 记录惰性补齐
+    （与 `backfillRestoreTitles` 同模式：拿到才带、已有不覆盖、不回写文件、
+    不新增轮询/端口；映射一次构建全表复用）。
+  - **测试**：新增 `lib/settle-workspace.test.js` 11 用例（basename 提取的
+    posix/Windows/结尾分隔符/脏输入、行级取值的 before 优先/after 兜底/未知
+    「—」、存根带 workspace 进 before、restore 记录带 workspace 进 after、
+    settle.colWorkspace zh/en 成对且 settle.* 键集对齐）；
+    `lib/routes.test.js` 新增 2 用例（GET /restarts 缺 workspace 惰性补齐
+    （registry sessionIds 直映射）、已有不覆盖/探测不到原样透传/非 restore
+    不动 + 补齐不回写文件逐字节校验），`buildHarness` 增 `workspaces` 参数
+    （workspaceRegistry.list() 可注入，默认与原硬编码一致）。
+
 ## [0.37.0] - 2026-11-09
 
 ### Added
